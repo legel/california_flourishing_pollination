@@ -55,6 +55,7 @@ from torch.utils.data import DataLoader, Dataset
 
 from cfp.dinov3.extractor import DINOv3Extractor
 from cfp.dinov3.extractor_gpu import DINOv3ExtractorGPU
+from cfp.dinov3.extractor_combined import DINOv3PhenoVisionExtractor
 
 
 class _PendingImageDataset(Dataset):
@@ -182,6 +183,11 @@ def embed(
         help="If true, workers only read raw JPEG bytes and the GPU decodes "
              "them via nvJPEG (5-10× throughput vs PIL path).",
     ),
+    with_phenovision: bool = typer.Option(
+        False, "--with-phenovision",
+        help="Also run PhenoVision (Dinnage 2025) to label each image with "
+             "flowering + fruiting probability. Requires --gpu-decode.",
+    ),
     prov_dir: Path = typer.Option(Path("provenance"), "--prov-dir"),
 ) -> None:
     """Run the DINOv3 embedding pass over all unembedded images in `image_dir`."""
@@ -201,12 +207,19 @@ def embed(
     console.print(f"this run's shard prefix: embeddings_{run_id}_")
     if gpu_decode:
         console.print("[bold cyan]GPU decode path (nvJPEG) enabled[/]")
+    if with_phenovision:
+        console.print("[bold cyan]PhenoVision flower+fruit classifier enabled (Dinnage 2025)[/]")
+        if not gpu_decode:
+            raise typer.BadParameter("--with-phenovision requires --gpu-decode")
 
-    extractor = (
-        DINOv3ExtractorGPU(backbone=backbone, image_size=image_size)
-        if gpu_decode
-        else DINOv3Extractor(backbone=backbone, image_size=image_size)
-    )
+    if with_phenovision:
+        extractor = DINOv3PhenoVisionExtractor(
+            dinov3_backbone=backbone, image_size=image_size,
+        )
+    elif gpu_decode:
+        extractor = DINOv3ExtractorGPU(backbone=backbone, image_size=image_size)
+    else:
+        extractor = DINOv3Extractor(backbone=backbone, image_size=image_size)
     console.print(
         f"DINOv3 loaded: backbone={backbone}  repo={extractor.repo}  embed_dim={extractor.embed_dim}  "
         f"patch={extractor.patch_size}  grid={extractor.grid_hw}  device={extractor.device}  dtype={extractor.dtype}"
@@ -238,7 +251,6 @@ def embed(
             return
         if gpu_decode:
             out, failed_idx = extractor.embed_from_bytes(batch_imgs)
-            # Drop the metadata + paths for failed-to-decode entries so they line up with `out`.
             if failed_idx:
                 bad = set(failed_idx)
                 for i in sorted(bad, reverse=True):
@@ -257,19 +269,28 @@ def embed(
             surviving_paths = batch_paths
         cls_np = out.cls.astype(np.float16)
         patches_np = out.patches.astype(np.float16)
+        # PhenoVision outputs are present only on the combined extractor.
+        flowering = getattr(out, "flowering_prob", None)
+        fruiting = getattr(out, "fruiting_prob", None)
+        repo = getattr(extractor, "repo", getattr(extractor, "dinov3_repo", "?"))
         for i, meta in enumerate(surviving_meta):
             cls_bytes = cls_np[i].tobytes()
             patches_bytes = patches_np[i].tobytes()
-            shard_rows.append({
+            row = {
                 **meta,
                 "cls_fp16": cls_bytes,
                 "patches_fp16": patches_bytes,
                 "cls_shape": list(cls_np[i].shape),
                 "patches_shape": list(patches_np[i].shape),
                 "backbone": backbone,
-                "repo": extractor.repo,
+                "repo": repo,
                 "embedded_utc": datetime.now(timezone.utc).isoformat(),
-            })
+            }
+            if flowering is not None:
+                row["phenovision_flowering_prob"] = float(flowering[i])
+                row["phenovision_fruiting_prob"] = float(fruiting[i])
+                row["phenovision_repo"] = getattr(extractor, "phenovision_repo", "phenobase/phenovision")
+            shard_rows.append(row)
             new_ids.append(int(meta["gbif_occurrence_id"]))
         if delete_after:
             for p in surviving_paths:
