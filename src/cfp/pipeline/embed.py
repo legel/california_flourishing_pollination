@@ -118,31 +118,49 @@ app = typer.Typer(add_completion=False, help="DINOv3 embedding worker.")
 console = Console()
 
 
-def _scan_pending(image_dir: Path, done: set[int]) -> Iterator[tuple[int, Path, Path]]:
-    """Yield (gbif_id, image_path, meta_path) for every image not in `done`."""
+def _scan_pending(image_dir: Path, done: set) -> Iterator[tuple[int, Path, Path]]:
+    """Yield (gbif_id, image_path, meta_path) for every image whose URL is not in `done`.
+
+    Image filenames are ``<gbif_id>_<url_hash8>.<ext>`` for multi-photo support.
+    Legacy ``<gbif_id>.<ext>`` files (from before the URL-keyed downloader) are
+    still handled — we read their URL from the sidecar JSON. ``done`` is a set
+    of image_url_large strings.
+    """
     for bucket in sorted(image_dir.glob("*")):
         if not bucket.is_dir():
             continue
         for img in sorted(bucket.glob("*")):
             if img.suffix == ".json" or img.suffix.endswith(".tmp"):
                 continue
+            stem = img.stem
             try:
-                gbif_id = int(img.stem)
+                gbif_id = int(stem.split("_", 1)[0])
             except ValueError:
                 continue
-            if gbif_id in done:
+            meta_path = img.with_suffix(".json")
+            url = None
+            if meta_path.exists():
+                try:
+                    url = json.loads(meta_path.read_text()).get("image_url_large") or \
+                          json.loads(meta_path.read_text()).get("url")
+                except Exception:
+                    pass
+            if url and url in done:
                 continue
-            meta = img.with_suffix(".json")
-            yield gbif_id, img, meta
+            yield gbif_id, img, meta_path
 
 
-def _load_checkpoint(path: Path) -> set[int]:
+def _load_checkpoint(path: Path) -> set[str]:
+    """Checkpoint is keyed by image_url_large (one entry per photo). Legacy
+    checkpoints that only tracked gbif_occurrence_id are read defensively —
+    those entries don't carry URL info so we treat the checkpoint as empty
+    under the new scheme (legacy IDs may get re-embedded as URL-keyed rows)."""
     if not path.exists():
         return set()
-    return set(
-        pq.read_table(path, columns=["gbif_occurrence_id"])
-        .to_pandas()["gbif_occurrence_id"].astype(int).tolist()
-    )
+    tbl = pq.read_table(path)
+    if "image_url_large" in tbl.column_names:
+        return set(tbl.to_pandas()["image_url_large"].dropna().astype(str).tolist())
+    return set()
 
 
 def _flush_shard(rows: list[dict], shard_dir: Path, shard_idx: int, run_id: str = "") -> Path:
@@ -152,13 +170,16 @@ def _flush_shard(rows: list[dict], shard_dir: Path, shard_idx: int, run_id: str 
     return out
 
 
-def _append_checkpoint(path: Path, ids: list[int]) -> None:
-    df = pd.DataFrame({"gbif_occurrence_id": ids,
+def _append_checkpoint(path: Path, urls: list[str]) -> None:
+    if not urls:
+        return
+    df = pd.DataFrame({"image_url_large": urls,
                        "embedded_utc": datetime.now(timezone.utc).isoformat()})
     path.parent.mkdir(parents=True, exist_ok=True)
     if path.exists():
         existing = pq.read_table(path).to_pandas()
-        df = pd.concat([existing, df], ignore_index=True)
+        if "image_url_large" in existing.columns:
+            df = pd.concat([existing[["image_url_large", "embedded_utc"]], df], ignore_index=True)
     df.to_parquet(path, index=False)
 
 
@@ -291,7 +312,7 @@ def embed(
                 row["phenovision_fruiting_prob"] = float(fruiting[i])
                 row["phenovision_repo"] = getattr(extractor, "phenovision_repo", "phenobase/phenovision")
             shard_rows.append(row)
-            new_ids.append(int(meta["gbif_occurrence_id"]))
+            new_ids.append(str(meta.get("image_url_large") or meta.get("url") or meta["gbif_occurrence_id"]))
         if delete_after:
             for p in surviving_paths:
                 try:

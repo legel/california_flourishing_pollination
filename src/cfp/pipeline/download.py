@@ -20,6 +20,7 @@ Failures (logged, retried with backoff, finally dropped):
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import os
 import shutil
@@ -55,9 +56,16 @@ def _disk_usage(path: Path) -> int:
     return total
 
 
-def _path_for(image_dir: Path, gbif_id: int, ext: str) -> tuple[Path, Path]:
+def _url_hash(url: str) -> str:
+    """8-char hex digest of an image URL — disambiguates multiple photos per gbif_id."""
+    return hashlib.md5(url.encode("utf-8")).hexdigest()[:8]
+
+
+def _path_for(image_dir: Path, gbif_id: int, url: str, ext: str) -> tuple[Path, Path]:
+    """One observation can have multiple photos; URL hash makes filenames unique."""
     bucket = image_dir / f"{gbif_id % 1000:03d}"
-    return bucket / f"{gbif_id}.{ext}", bucket / f"{gbif_id}.json"
+    stem = f"{gbif_id}_{_url_hash(url)}"
+    return bucket / f"{stem}.{ext}", bucket / f"{stem}.json"
 
 
 def _ext_from_url(url: str) -> str:
@@ -77,9 +85,10 @@ async def _fetch_one(
     gbif_id = int(row["gbif_occurrence_id"])
     url = row["image_url_large"]
     ext = _ext_from_url(url)
-    img_path, meta_path = _path_for(image_dir, gbif_id, ext)
+    img_path, meta_path = _path_for(image_dir, gbif_id, url, ext)
     if img_path.exists():
-        return {"gbif_occurrence_id": gbif_id, "status": "skipped_exists", "size_bytes": img_path.stat().st_size,
+        return {"gbif_occurrence_id": gbif_id, "image_url_large": url,
+                "status": "skipped_exists", "size_bytes": img_path.stat().st_size,
                 "path": str(img_path)}
 
     img_path.parent.mkdir(parents=True, exist_ok=True)
@@ -109,6 +118,7 @@ async def _fetch_one(
                         meta_path.write_text(json.dumps({
                             "gbif_occurrence_id": gbif_id,
                             "url": url,
+                            "image_url_large": url,
                             "license": row.get("license"),
                             "rights_holder": row.get("rights_holder"),
                             "inat_observation_id": row.get("inat_observation_id"),
@@ -121,29 +131,39 @@ async def _fetch_one(
                             "downloaded_utc": datetime.now(timezone.utc).isoformat(),
                             "elapsed_s": time.time() - started,
                         }))
-                        return {"gbif_occurrence_id": gbif_id, "status": "ok",
-                                "size_bytes": len(data), "path": str(img_path)}
+                        return {"gbif_occurrence_id": gbif_id, "image_url_large": url,
+                                "status": "ok", "size_bytes": len(data), "path": str(img_path)}
     except RetryError as e:
         return {"gbif_occurrence_id": gbif_id, "status": "fail", "url": url, "error": f"retry exhausted: {e}"}
     except Exception as e:
         return {"gbif_occurrence_id": gbif_id, "status": "fail", "url": url, "error": f"{type(e).__name__}: {e}"}
 
 
-def _load_checkpoint(path: Path) -> set[int]:
+def _load_checkpoint(path: Path) -> set[str]:
+    """Checkpoint is keyed by image_url_large (one entry per photo). Legacy parquets
+    that only track gbif_occurrence_id are upgraded transparently — those entries
+    will be re-downloaded under the new URL-keyed scheme."""
     if not path.exists():
         return set()
-    return set(pq.read_table(path, columns=["gbif_occurrence_id"]).to_pandas()["gbif_occurrence_id"].astype(int).tolist())
+    tbl = pq.read_table(path)
+    cols = tbl.column_names
+    if "image_url_large" in cols:
+        return set(tbl.to_pandas()["image_url_large"].dropna().astype(str).tolist())
+    return set()
 
 
-def _append_checkpoint(path: Path, ids: list[int]) -> None:
-    if not ids:
+def _append_checkpoint(path: Path, urls: list[str]) -> None:
+    if not urls:
         return
-    df = pd.DataFrame({"gbif_occurrence_id": ids,
+    df = pd.DataFrame({"image_url_large": urls,
                        "downloaded_utc": datetime.now(timezone.utc).isoformat()})
     path.parent.mkdir(parents=True, exist_ok=True)
     if path.exists():
         existing = pq.read_table(path)
-        df = pd.concat([existing.to_pandas(), df], ignore_index=True)
+        ex_df = existing.to_pandas()
+        # Keep only the URL column for the new schema.
+        if "image_url_large" in ex_df.columns:
+            df = pd.concat([ex_df[["image_url_large", "downloaded_utc"]], df], ignore_index=True)
     df.to_parquet(path, index=False)
 
 
@@ -192,12 +212,12 @@ def download(
 
     df = pd.read_parquet(manifest)
     done = _load_checkpoint(checkpoint)
-    df = df[~df["gbif_occurrence_id"].isin(done)]
+    df = df[~df["image_url_large"].astype(str).isin(done)]
     if shuffle:
         df = df.sample(frac=1, random_state=0).reset_index(drop=True)
     if limit:
         df = df.head(limit)
-    console.print(f"to download: [bold]{len(df)}[/]  (checkpoint already covers {len(done)})")
+    console.print(f"to download: [bold]{len(df)}[/]  (checkpoint already covers {len(done)} URLs)")
 
     cap_bytes = int(cap_gb * 1024**3)
     connector_limit = max(concurrency, per_host_concurrency)
@@ -247,10 +267,10 @@ def download(
                             n_done += 1
                             prog.update(tid, advance=1)
                             if res.get("status") == "ok":
-                                successes_buffer.append(int(res["gbif_occurrence_id"]))
+                                successes_buffer.append(str(res["image_url_large"]))
                                 cur_disk += int(res.get("size_bytes", 0))
                             elif res.get("status") == "skipped_exists":
-                                successes_buffer.append(int(res["gbif_occurrence_id"]))
+                                successes_buffer.append(str(res["image_url_large"]))
                             else:
                                 failures_buffer.append(res)
                             # Periodic flush.
@@ -272,9 +292,9 @@ def download(
                         n_done += 1
                         prog.update(tid, advance=1)
                         if res.get("status") == "ok":
-                            successes_buffer.append(int(res["gbif_occurrence_id"]))
+                            successes_buffer.append(str(res["image_url_large"]))
                         elif res.get("status") == "skipped_exists":
-                            successes_buffer.append(int(res["gbif_occurrence_id"]))
+                            successes_buffer.append(str(res["image_url_large"]))
                         else:
                             failures_buffer.append(res)
 
