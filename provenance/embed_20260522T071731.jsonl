@@ -1,1 +1,8 @@
 {"type": "run_meta", "stage": "pipeline.embed", "started_utc": "2026-05-22T07:17:31.050135+00:00", "image_dir": "/home/legel/cfp_images", "shard_dir": "/home/legel/cfp_shards", "backbone": "vitl16", "repo": "facebook/dinov3-vitl16-pretrain-lvd1689m", "image_size": 224, "batch_size": 32, "delete_after": true, "embed_dim": 1024, "grid_hw": [14, 14]}
+{"type": "bad_image", "gbif_occurrence_id": 4171422001, "path": "/home/legel/cfp_images/001/4171422001.jpg"}
+{"type": "bad_image", "gbif_occurrence_id": 5062868295, "path": "/home/legel/cfp_images/295/5062868295.jpg"}
+{"type": "bad_image", "gbif_occurrence_id": 5760886347, "path": "/home/legel/cfp_images/347/5760886347.jpg"}
+{"type": "bad_image", "gbif_occurrence_id": 4015278371, "path": "/home/legel/cfp_images/371/4015278371.jpg"}
+{"type": "bad_image", "gbif_occurrence_id": 6185970461, "path": "/home/legel/cfp_images/461/6185970461.jpg"}
+{"type": "bad_image", "gbif_occurrence_id": 5844582597, "path": "/home/legel/cfp_images/597/5844582597.jpg"}
+{"type": "bad_image", "gbif_occurrence_id": 6131106671, "path": "/home/legel/cfp_images/671/6131106671.jpg"}

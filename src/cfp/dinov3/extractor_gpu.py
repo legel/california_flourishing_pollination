@@ -122,7 +122,19 @@ class DINOv3ExtractorGPU:
                 failed.append(idx)
                 continue
 
-            img = img.unsqueeze(0).to(self.dtype) / 255.0
+            # Normalize shape to (1, 3, H, W) regardless of decoder output.
+            if img.ndim == 2:
+                img = img.unsqueeze(0).expand(3, -1, -1)
+            if img.ndim == 3:
+                img = img.unsqueeze(0)
+            elif img.ndim != 4:
+                failed.append(idx)
+                continue
+            if img.shape[1] == 4:
+                img = img[:, :3]
+            elif img.shape[1] == 1:
+                img = img.expand(-1, 3, -1, -1)
+            img = img.to(self.dtype) / 255.0
             img = F.interpolate(
                 img, size=(self.image_size, self.image_size),
                 mode="bilinear", align_corners=False, antialias=True,

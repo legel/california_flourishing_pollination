@@ -57,8 +57,15 @@ python -c "import pandas as pd; print('embedded:  ', len(pd.read_parquet('output
 ## What's deferred to Phase 1.5
 
 1. **Backfill PhenoVision onto the ~575K legacy DINOv3-only embeddings** that are on HF before the combined extractor went live. Re-process the same image URLs through PhenoVision only.
-2. Phenovision **spatial localization** of flowering (DINOv3 patches × PhenoVision classifier, or a flower-segmentation head). Currently we have image-level probability only.
-3. Recover the rare ~8K tail of CA-native plant taxa beyond Calscape's ~8.5K (would require Jepson MOU or family-level GBIF query splitting).
+2. **PhenoVision spatial localization** of flowering (DINOv3 patches × PhenoVision classifier, or a flower-segmentation head). Currently we have image-level probability only.
+3. **Raw-image bucket archive** to `hf://buckets/deepearth/cfp-raw-images` (created 2026-05-22, currently empty bar a few benchmark uploads). Bucket throughput benchmarked at ~36 img/sec for 400-image batches, ~150-200 img/sec extrapolated for 5K batches. Slower than embed rate of 245-370 img/sec, so adding it inline would bottleneck the pipeline. As a separate background job once embedding completes (~24 h sync to push 2.4 TB), this preserves all raw photos for re-processing with future models. iNat photo URLs remain in every embedding row, so the dataset is self-contained even without the bucket.
+4. **Recover the rare ~8K tail** of CA-native plant taxa beyond Calscape's ~8.5K (would require Jepson MOU or family-level GBIF query splitting).
+
+## Notable in-session bug fixes
+
+1. **DINOv3 ViT-L/16 fp16 → NaN**: switched to bf16 (numerically equivalent to fp32 at fp16 speed). Discovered, scrubbed bad shards, re-ran cleanly. See `ASSUMPTIONS.md §E`.
+2. **Shard-name collision after embedder restart**: embeddings_0000NN.parquet got skipped by uploader because remote already had that name from a prior restart. Fixed with `run_id` timestamp prefix per process start.
+3. **nvJPEG / decode_image variably 3D vs 4D output** crashed `F.interpolate` with 5D input. Fixed with defensive shape normalization in `extractor_combined.py` / `extractor_gpu.py`. The crash loop wasted ~3 h of embedder throughput; watchdog kept the pipeline alive throughout but at ~34 img/sec instead of 245. Post-fix rate is 245-370 img/sec sustained.
 
 ## Safety
 

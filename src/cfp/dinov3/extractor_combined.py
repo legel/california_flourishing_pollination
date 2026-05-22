@@ -141,7 +141,21 @@ class DINOv3PhenoVisionExtractor:
                 failed.append(idx)
                 continue
 
-            img = img.unsqueeze(0).to(self.dtype) / 255.0
+            # nvJPEG / decode_image variously return 3D (C, H, W) or 4D
+            # (N, C, H, W) depending on input. Normalize to 4D before resize.
+            if img.ndim == 2:                      # grayscale, no channel dim
+                img = img.unsqueeze(0).expand(3, -1, -1)
+            if img.ndim == 3:
+                img = img.unsqueeze(0)             # (C, H, W)  → (1, C, H, W)
+            elif img.ndim != 4:
+                failed.append(idx)
+                continue
+            # Drop alpha channel if present (RGBA → RGB)
+            if img.shape[1] == 4:
+                img = img[:, :3]
+            elif img.shape[1] == 1:
+                img = img.expand(-1, 3, -1, -1)
+            img = img.to(self.dtype) / 255.0
             img = F.interpolate(
                 img, size=(self.image_size, self.image_size),
                 mode="bilinear", align_corners=False, antialias=True,
