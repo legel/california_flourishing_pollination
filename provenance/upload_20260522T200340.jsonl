@@ -1,0 +1,2 @@
+{"type": "run_meta", "stage": "pipeline.upload", "started_utc": "2026-05-22T20:03:40.648563+00:00", "repo": "deepearth/california-flourishing-pollination", "shard_dir": "/home/legel/cfp_shards", "user": "ecodash", "remote_prefix": "embeddings/"}
+{"type": "upload", "shard": "embeddings_20260522T112428_000290.parquet", "remote_path": "embeddings/embeddings_20260522T112428_000290.parquet", "size_bytes": 1566259450, "uploaded_utc": "2026-05-22T20:03:53.738040+00:00"}

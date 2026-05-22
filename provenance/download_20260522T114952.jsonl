@@ -1,0 +1,1 @@
+{"type": "run_meta", "stage": "pipeline.download", "started_utc": "2026-05-22T11:49:52.650599+00:00", "manifest": "data/processed/image_manifest.parquet", "image_dir": "/home/legel/cfp_images", "cap_gb": 800.0, "concurrency": 256, "per_host_concurrency": 64}
