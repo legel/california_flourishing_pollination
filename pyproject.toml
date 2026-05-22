@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cfp"
+version = "0.1.0"
+description = "California Flourishing & Pollination — Phase 1 data pipeline (QED × Ecological Intelligence)"
+readme = "README.md"
+requires-python = ">=3.11"
+authors = [{ name = "Lance Legel", email = "lance@3co.ai" }]
+license = { text = "Apache-2.0" }
+dependencies = []   # see requirements.txt — pinned to support the conda install workflow
+
+[project.scripts]
+cfp-validate-dinov3 = "cfp.dinov3.validate_sample:app"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["cfp*"]

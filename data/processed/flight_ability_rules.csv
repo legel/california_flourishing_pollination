@@ -1,0 +1,27 @@
+level,name,flying,notes
+order,Lepidoptera,true,all winged adults
+order,Diptera,true,all winged adults
+order,Hemiptera,true,most species winged
+order,Thysanoptera,true,minute winged insects (pollen-vector capable)
+order,Neuroptera,true,winged lacewings
+order,Mecoptera,true,winged scorpionflies
+order,Hymenoptera,true,gate to family level below for exceptions
+family,Formicidae,false,workers wingless — excluded per project scope; alates excluded too
+order,Coleoptera,unknown,gate at family level below
+family,Cantharidae,true,soldier beetles — winged
+family,Cerambycidae,true,longhorn beetles — winged
+family,Cleridae,true,checkered beetles — winged
+family,Meloidae,true,blister beetles — winged
+family,Mordellidae,true,tumbling flower beetles — winged
+family,Scarabaeidae,true,scarab beetles — winged
+family,Buprestidae,true,jewel beetles — winged
+family,Nitidulidae,true,sap beetles — winged
+family,Melyridae,true,soft-winged flower beetles — winged
+family,Dasytidae,true,soft-winged flower beetles (now in Melyridae) — winged
+class,Aves,unknown,gate at family
+family,Trochilidae,true,hummingbirds — only NA pollinator bird family of note
+order,Chiroptera,true,bats — flying mammals; CA: Phyllostomidae rare visitors
+class,Arachnida,false,non-flying
+class,Gastropoda,false,non-flying
+class,Mammalia,false,non-flying except Chiroptera (rule overrides above)
+class,Reptilia,false,non-flying

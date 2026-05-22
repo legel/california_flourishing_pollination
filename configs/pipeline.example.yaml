@@ -1,0 +1,38 @@
+# Example pipeline configuration.
+# Copy to configs/pipeline.yaml and edit. configs/pipeline.yaml is gitignored.
+
+paths:
+  manifest: data/processed/image_manifest.parquet
+  checkpoint: outputs/checkpoint_done_image_ids.parquet
+  shards_dir: outputs/embeddings
+  failed: outputs/failed.parquet
+
+http:
+  concurrency: 64
+  per_host_concurrency: 32
+  user_agent: "DeepEarth-CFP/0.1 (lance@3co.ai; +https://github.com/deepearth)"
+  retry:
+    attempts: 5
+    initial_wait_s: 1.0
+    backoff_factor: 2.0
+
+dinov3:
+  backbone: vitl16        # vitb16 for validation, vitl16 for production
+  dtype: bfloat16         # IMPORTANT: ViT-L/16 in fp16 produces NaN; bf16 = fp32 quality at fp16 cost
+  image_size: 224
+  batch_size: 64
+  device: cuda:0
+  return: spatial_patches  # CLS + patch tokens
+
+shards:
+  images_per_shard: 10000
+
+huggingface:
+  repo_id: deepearth/california-flourishing-pollination
+  repo_type: dataset
+  shard_prefix: embeddings/shard_
+  manifest_path: manifests/embeddings.parquet
+
+logging:
+  level: INFO
+  rich: true

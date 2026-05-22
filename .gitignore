@@ -1,0 +1,34 @@
+# Local-only configs and credentials
+configs/pipeline.yaml
+.env
+.hf_token
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.venv/
+.ipynb_checkpoints/
+
+# Data & embeddings — too large for git; published to HF instead
+data/raw/
+data/processed/
+outputs/embeddings/
+outputs/manifests/
+outputs/checkpoint_*.parquet
+outputs/failed_*.parquet
+outputs/chain_pids.json
+logs/
+
+# Vendored upstream forks — referenced by URL, not committed in-tree
+vendor/
+
+# Validation artifacts are too large for git; pointer kept in PROVENANCE.md
+data/validation/
+
+# Validation artifacts — track only the final zip, not intermediates
+data/validation/_workdir/
+
+# OS
+.DS_Store
