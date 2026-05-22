@@ -8,9 +8,22 @@ This document records — for every input dataset, every query, every model chec
 
 ## 1. California native plant species list
 
-After investigating Calscape (CNPS), Calflora, Jepson eFlora, CNPS Rare Plant Inventory, and GBIF, the open + Nature-paper-redistributable stack is:
+### 1a. CNPS Calscape — PRIMARY (canonical, authoritative)
 
-### 1a. iNaturalist species_counts (CA × Plantae × native) — PRIMARY
+**CNPS canonical definition of "California native plant"** (quoted verbatim, see https://www.cnps.org/gardening/why-natives/what-are-native-plants):
+
+> Our native plants grew here prior to European contact. California's native plants evolved here over a very long period, and are the plants which the first Californians knew and depended on for their livelihood.
+
+- **Source:** https://calscape.org/search (Native to California filter) → **Options → Export list to Excel**. Calscape is the CNPS-maintained authoritative plant database.
+- **Mechanism:** The Calscape website sits behind Cloudflare Turnstile and exposes no public bulk API or CSV endpoint (verified: `/sitemap.xml`, `/export/search/`, `/app/taxon_search?nat=t&format=csv`, `/our-data`, and other paths all return HTTP 403 with a JS challenge wall). Automated bypass (cloudscraper, playwright-stealth + xvfb + headed Chromium with anti-detection args) likewise fails. The export is therefore acquired manually by the project PI through the Calscape UI and archived locally with sha256 attestation under `data/raw/calscape/`.
+- **Snapshot date:** _set per fetch — recorded in `provenance/cnps_calscape_*.jsonl`_
+- **Count at snapshot 2026-05-22:** **8,507 taxa** — matching CNPS's own self-reported "more than 8,500 types."
+- **Per-taxon fields (50-column Calscape export):** Botanical Name, Common Name, **Butterflies and Moths Supported** (count — direct pollinator-network signal), Attracts Wildlife, Plant Type, Form, Height/Width (text + parsed min/max), Growth Rate, Seasonality, **Flower Color, Flowering Season**, Fragrance, Sun, Soil Drainage, Water Requirement, Summer Irrigation, Ease of Care, **Nursery Availability**, Companions, Special Uses, Communities (Jepson ecoregions), Hardiness, Sunset Zones, Soil characteristics, Mulch, Site Type, Elevation (min/max), Rainfall (min/max), Tips, Pests, Propagation, Other Names / Alternative Common Names / Obsolete Names, **Rarity**, **Is Cultivar**, Jepson Link, Calscape URL.
+- **Cross-reference to iNat (added by `cfp.cnps calscape ingest`):** `inat_taxon_id` (resolved via `/v1/taxa?q=<name>&rank=species`), `ca_observation_count` (resolved via `/v1/observations/species_counts?place_id=14&taxon_id=<id>&native=true`). These are required for the downstream image manifest builder.
+- **License:** Calscape data is **CC-BY-NC 4.0** per Calscape's terms; the derived parquet redistributes Calscape's per-taxon fields under the same NC restriction (i.e., for non-commercial research use only). Note: this is a per-row license metadata field added to the parquet; the DINOv3 embeddings derived downstream are transformative derivatives of *iNaturalist photos* (separate licensing chain) and are MIT-licensed.
+- **Citation:** California Native Plant Society (2026). *Calscape: Native Plants for California.* https://calscape.org/. "Native to California" export snapshotted _YYYY-MM-DD_.
+
+### 1b. iNaturalist species_counts (CA × Plantae × native=true) — secondary cross-reference
 
 **CNPS canonical definition of "California native plant"** (quoted verbatim, see https://www.cnps.org/gardening/why-natives/what-are-native-plants):
 
@@ -48,15 +61,9 @@ After investigating Calscape (CNPS), Calflora, Jepson eFlora, CNPS Rare Plant In
 
 ### 1d. Jepson eFlora (taxonomic authority, **cite only**)
 - **URL:** https://ucjeps.berkeley.edu/eflora/
-- **Use:** name reconciliation for ambiguous taxa.
+- **Use:** name reconciliation for ambiguous taxa; per-taxon Jepson link is preserved in the Calscape export for direct deep-linking.
 - **License:** explicitly prohibits redistribution. Cite only; do not republish data.
 - **Citation:** Jepson Flora Project (eds.) (2026). *Jepson eFlora.* University and Jepson Herbaria, UC Berkeley. https://ucjeps.berkeley.edu/eflora/.
-
-### 1e. Calscape (horticultural traits + nursery availability) — **MOU required**
-- **URL:** https://calscape.org/
-- **Status:** primary source for sun/water/soil/bloom traits and per-species nursery availability, but CC BY-NC + Cloudflare-protected (no API).
-- **Action:** request a data-sharing MOU from `calscape@cnps.org` under the UC Berkeley × Ecological Intelligence collaboration. Until granted, the Phase 1 dataset uses 1a–1d only; nursery and horticultural-trait fields are deferred.
-- **Citation (when used):** California Native Plant Society (2026). *Calscape: Native Plants for California.* https://calscape.org/.
 
 ---
 
