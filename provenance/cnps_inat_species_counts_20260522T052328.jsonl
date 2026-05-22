@@ -1,0 +1,19 @@
+{"type": "run_meta", "stage": "cnps.fetch", "started_utc": "2026-05-22T05:23:28.774644+00:00", "source": "iNaturalist /v1/observations/species_counts", "params": {"place_id": 14, "iconic_taxa": "Plantae", "native": "true"}, "definition_of_native": "Our native plants grew here prior to European contact. California's native plants evolved here over a very long period, and are the plants which the first Californians knew and depended on for their livelihood. \u2014 California Native Plant Society, https://www.cnps.org/gardening/why-natives/what-are-native-plants", "api": "https://api.inaturalist.org/v1", "fetch_ancestors": false}
+{"type": "checkpoint", "count": 500}
+{"type": "checkpoint", "count": 1000}
+{"type": "checkpoint", "count": 1500}
+{"type": "checkpoint", "count": 2000}
+{"type": "checkpoint", "count": 2500}
+{"type": "checkpoint", "count": 3000}
+{"type": "checkpoint", "count": 3500}
+{"type": "checkpoint", "count": 4000}
+{"type": "checkpoint", "count": 4500}
+{"type": "checkpoint", "count": 5000}
+{"type": "checkpoint", "count": 5500}
+{"type": "checkpoint", "count": 6000}
+{"type": "checkpoint", "count": 6500}
+{"type": "checkpoint", "count": 7000}
+{"type": "checkpoint", "count": 7500}
+{"type": "checkpoint", "count": 8000}
+{"type": "checkpoint", "count": 8500}
+{"type": "result", "count": 8869, "n_species_rank": 8783, "n_subspecies": 0, "n_variety": 0, "out_path": "data/processed/plants_california_native.parquet", "finished_utc": "2026-05-22T05:24:05.153532+00:00"}

@@ -1,0 +1,2 @@
+{"type": "run_meta", "stage": "pipeline.embed", "started_utc": "2026-05-22T03:15:43.920175+00:00", "image_dir": "/home/legel/cfp_images", "shard_dir": "/home/legel/cfp_shards", "backbone": "vitl16", "repo": "facebook/dinov3-vitl16-pretrain-lvd1689m", "image_size": 224, "batch_size": 64, "delete_after": true, "embed_dim": 1024, "grid_hw": [14, 14]}
+{"type": "result", "n_embedded": 0, "checkpoint": "outputs/checkpoint_embedded.parquet", "shard_dir": "/home/legel/cfp_shards", "finished_utc": "2026-05-22T03:15:45.323464+00:00"}

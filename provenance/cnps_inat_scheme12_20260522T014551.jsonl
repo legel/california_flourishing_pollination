@@ -1,0 +1,2 @@
+{"type": "run_meta", "stage": "cnps.fetch", "started_utc": "2026-05-22T01:45:51.955311+00:00", "source": "iNaturalist taxon scheme #12 (Calflora)", "api": "https://api.inaturalist.org/v1", "with_gbif_match": false, "fetch_ancestors": true}
+{"type": "checkpoint", "count": 500}

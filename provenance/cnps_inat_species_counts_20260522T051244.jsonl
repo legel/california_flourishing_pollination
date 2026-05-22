@@ -1,0 +1,22 @@
+{"type": "run_meta", "stage": "cnps.fetch", "started_utc": "2026-05-22T05:12:44.409673+00:00", "source": "iNaturalist /v1/observations/species_counts", "params": {"place_id": 14, "taxon_id": 47126, "establishment_means": "native"}, "api": "https://api.inaturalist.org/v1", "fetch_ancestors": false}
+{"type": "checkpoint", "count": 500}
+{"type": "checkpoint", "count": 1000}
+{"type": "checkpoint", "count": 1500}
+{"type": "checkpoint", "count": 2000}
+{"type": "checkpoint", "count": 2500}
+{"type": "checkpoint", "count": 3000}
+{"type": "checkpoint", "count": 3500}
+{"type": "checkpoint", "count": 4000}
+{"type": "checkpoint", "count": 4500}
+{"type": "checkpoint", "count": 5000}
+{"type": "checkpoint", "count": 5500}
+{"type": "checkpoint", "count": 6000}
+{"type": "checkpoint", "count": 6500}
+{"type": "checkpoint", "count": 7000}
+{"type": "checkpoint", "count": 7500}
+{"type": "checkpoint", "count": 8000}
+{"type": "checkpoint", "count": 8500}
+{"type": "checkpoint", "count": 9000}
+{"type": "checkpoint", "count": 9500}
+{"type": "checkpoint", "count": 10000}
+{"type": "result", "count": 10000, "n_species_rank": 9707, "n_subspecies": 0, "n_variety": 0, "out_path": "data/processed/plants_california_native.parquet", "finished_utc": "2026-05-22T05:13:33.617656+00:00"}

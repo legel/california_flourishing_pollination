@@ -1,0 +1,2 @@
+{"type": "run_meta", "stage": "pipeline.download", "started_utc": "2026-05-22T02:21:15.706267+00:00", "manifest": "data/processed/_smoke_image_manifest.parquet", "image_dir": "/home/legel/cfp_smoketest_images", "cap_gb": 0.5, "concurrency": 4, "per_host_concurrency": 32}
+{"type": "result", "downloaded_total": 8, "disk_usage_bytes": 6619539, "image_dir": "/home/legel/cfp_smoketest_images", "checkpoint": "/home/legel/cfp_smoketest_images/_checkpoint.parquet", "failed_path": "/home/legel/cfp_smoketest_images/_failed.parquet", "finished_utc": "2026-05-22T02:21:17.241635+00:00"}
