@@ -1,0 +1,2 @@
+{"type": "run_meta", "stage": "pipeline.download", "started_utc": "2026-05-22T06:17:58.926418+00:00", "manifest": "data/processed/image_manifest.parquet", "image_dir": "/home/legel/cfp_images", "cap_gb": 800.0, "concurrency": 128, "per_host_concurrency": 32}
+{"type": "result", "downloaded_total": 0, "disk_usage_bytes": 1078745, "image_dir": "/home/legel/cfp_images", "checkpoint": "outputs/checkpoint_downloaded.parquet", "failed_path": "outputs/failed_downloads.parquet", "finished_utc": "2026-05-22T06:18:00.474991+00:00"}

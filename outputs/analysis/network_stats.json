@@ -1,0 +1,15 @@
+{
+  "n_plant_nodes": 1606,
+  "n_pollinator_nodes": 1857,
+  "n_unique_edges": 13602,
+  "n_total_records": 45805,
+  "bipartite_density": 0.00456084513446144,
+  "plant_degree_max": 405,
+  "plant_degree_mean": 8.469489414694895,
+  "plant_degree_median": 2.0,
+  "pollinator_degree_max": 536,
+  "pollinator_degree_mean": 7.324717285945073,
+  "pollinator_degree_median": 2.0,
+  "calscape_overlap": 1008,
+  "calscape_zero_documented": 7499
+}

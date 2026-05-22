@@ -54,10 +54,11 @@ from rich.progress import BarColumn, MofNCompleteColumn, Progress, TextColumn, T
 from torch.utils.data import DataLoader, Dataset
 
 from cfp.dinov3.extractor import DINOv3Extractor
+from cfp.dinov3.extractor_gpu import DINOv3ExtractorGPU
 
 
 class _PendingImageDataset(Dataset):
-    """Decodes images + reads metadata in parallel worker processes."""
+    """Decodes images + reads metadata in parallel worker processes (PIL path)."""
 
     def __init__(self, items: List[Tuple[int, Path, Path]]):
         self.items = items
@@ -79,6 +80,32 @@ class _PendingImageDataset(Dataset):
             except Exception:
                 pass
         return {"gbif_id": gbif_id, "image": img, "meta": meta,
+                "img_path": str(img_path), "ok": True}
+
+
+class _RawBytesDataset(Dataset):
+    """Workers only read raw JPEG bytes from disk; GPU decodes them later (nvJPEG path)."""
+
+    def __init__(self, items: List[Tuple[int, Path, Path]]):
+        self.items = items
+
+    def __len__(self) -> int:
+        return len(self.items)
+
+    def __getitem__(self, idx: int):
+        gbif_id, img_path, meta_path = self.items[idx]
+        try:
+            buf = img_path.read_bytes()
+        except OSError:
+            return {"gbif_id": gbif_id, "bytes": None, "meta": None,
+                    "img_path": str(img_path), "ok": False}
+        meta = {}
+        if meta_path.exists():
+            try:
+                meta = json.loads(meta_path.read_text())
+            except Exception:
+                pass
+        return {"gbif_id": gbif_id, "bytes": buf, "meta": meta,
                 "img_path": str(img_path), "ok": True}
 
 
@@ -150,6 +177,11 @@ def embed(
         help="If >0, after each pass-through sleep this long and re-scan for new images. "
              "Use for tail-the-disk concurrent operation alongside the downloader.",
     ),
+    gpu_decode: bool = typer.Option(
+        False, "--gpu-decode/--cpu-decode",
+        help="If true, workers only read raw JPEG bytes and the GPU decodes "
+             "them via nvJPEG (5-10× throughput vs PIL path).",
+    ),
     prov_dir: Path = typer.Option(Path("provenance"), "--prov-dir"),
 ) -> None:
     """Run the DINOv3 embedding pass over all unembedded images in `image_dir`."""
@@ -167,8 +199,14 @@ def embed(
     # (which would otherwise clobber each other on the HF dataset).
     run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
     console.print(f"this run's shard prefix: embeddings_{run_id}_")
+    if gpu_decode:
+        console.print("[bold cyan]GPU decode path (nvJPEG) enabled[/]")
 
-    extractor = DINOv3Extractor(backbone=backbone, image_size=image_size)
+    extractor = (
+        DINOv3ExtractorGPU(backbone=backbone, image_size=image_size)
+        if gpu_decode
+        else DINOv3Extractor(backbone=backbone, image_size=image_size)
+    )
     console.print(
         f"DINOv3 loaded: backbone={backbone}  repo={extractor.repo}  embed_dim={extractor.embed_dim}  "
         f"patch={extractor.patch_size}  grid={extractor.grid_hw}  device={extractor.device}  dtype={extractor.dtype}"
@@ -190,7 +228,7 @@ def embed(
     new_ids: list[int] = []
     n_done = 0
 
-    batch_imgs: list[Image.Image] = []
+    batch_imgs: list = []  # PIL.Image for cpu path, raw bytes for gpu path
     batch_meta: list[dict] = []
     batch_paths: list[Path] = []
 
@@ -198,10 +236,28 @@ def embed(
         nonlocal shard_idx, shard_rows, new_ids
         if not batch_imgs:
             return
-        out = extractor.embed(batch_imgs)
+        if gpu_decode:
+            out, failed_idx = extractor.embed_from_bytes(batch_imgs)
+            # Drop the metadata + paths for failed-to-decode entries so they line up with `out`.
+            if failed_idx:
+                bad = set(failed_idx)
+                for i in sorted(bad, reverse=True):
+                    meta = batch_meta[i]
+                    prov.write(json.dumps({"type": "bad_image",
+                                           "gbif_occurrence_id": meta["gbif_occurrence_id"],
+                                           "path": str(batch_paths[i])}) + "\n")
+                surviving_meta = [m for i, m in enumerate(batch_meta) if i not in bad]
+                surviving_paths = [p for i, p in enumerate(batch_paths) if i not in bad]
+            else:
+                surviving_meta = batch_meta
+                surviving_paths = batch_paths
+        else:
+            out = extractor.embed(batch_imgs)
+            surviving_meta = batch_meta
+            surviving_paths = batch_paths
         cls_np = out.cls.astype(np.float16)
         patches_np = out.patches.astype(np.float16)
-        for i, meta in enumerate(batch_meta):
+        for i, meta in enumerate(surviving_meta):
             cls_bytes = cls_np[i].tobytes()
             patches_bytes = patches_np[i].tobytes()
             shard_rows.append({
@@ -216,7 +272,7 @@ def embed(
             })
             new_ids.append(int(meta["gbif_occurrence_id"]))
         if delete_after:
-            for p in batch_paths:
+            for p in surviving_paths:
                 try:
                     p.unlink(missing_ok=True)
                     p.with_suffix(".json").unlink(missing_ok=True)
@@ -253,7 +309,7 @@ def embed(
             done = _load_checkpoint(checkpoint)
             continue
 
-        ds = _PendingImageDataset(pending)
+        ds = _RawBytesDataset(pending) if gpu_decode else _PendingImageDataset(pending)
         loader = DataLoader(
             ds,
             batch_size=batch_size,
@@ -283,7 +339,7 @@ def embed(
                                                "path": item["img_path"]}) + "\n")
                         continue
                     meta_obj = item["meta"] or {}
-                    batch_imgs.append(item["image"])
+                    batch_imgs.append(item["bytes"] if gpu_decode else item["image"])
                     batch_meta.append({
                         "gbif_occurrence_id": item["gbif_id"],
                         "taxon_name": meta_obj.get("taxon_name"),

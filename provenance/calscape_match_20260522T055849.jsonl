@@ -1,0 +1,1 @@
+{"type": "run_meta", "stage": "cnps.calscape.match", "started_utc": "2026-05-22T05:58:49.588324+00:00", "concurrency": 3, "inat_api": "https://api.inaturalist.org/v1", "gbif_api": "https://api.gbif.org/v1", "n_total": 50, "n_inat_matched": 50, "n_gbif_matched": 50, "n_either_matched": 50}
