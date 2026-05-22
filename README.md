@@ -2,7 +2,7 @@
 
 > **AI for Scientific Modeling of Ecosystems — Dynamic Forecasting of Flowering and Pollination across California with DeepEarth**
 >
-> A research collaboration between **[Ecological Intelligence, Inc.](https://ecological.dev)** (Lance Legel, PI) and the **[Quantitative Ecosystem Dynamics (QED) Lab](https://www.keenangroup.info/)** at UC Berkeley (Trevor Keenan, PI; ESPM). Affiliated Organization research collaboration, hosted at the QED lab starting **May 4, 2026**.
+> A research collaboration between **[Ecological Intelligence, Inc.](https://ecological.dev)** (Lance Legel, PI) and the **[Quantitative Ecosystem Dynamics (QED) Lab](https://www.keenangroup.info/)** at UC Berkeley (Trevor Keenan, PI; ESPM).
 
 This repository hosts the Phase 1 pipeline: **data collection, pre-processing, and self-supervised embedding** of every iNaturalist observation of every California-native plant and every California-observed flying pollinator. Outputs are published as the [`deepearth/california-flourishing-pollination`](https://huggingface.co/datasets/deepearth/california-flourishing-pollination) dataset on Hugging Face. Downstream forecasting models live in [`legel/deepearth/models/flowering`](https://github.com/legel/deepearth/tree/main/models/flowering) and [`legel/deepearth/models/pollination`](https://github.com/legel/deepearth/tree/main/models/pollination).
 
