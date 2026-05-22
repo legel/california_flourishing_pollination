@@ -44,3 +44,6 @@
 {"type": "upload", "shard": "embeddings_20260522T033356_000038.parquet", "remote_path": "embeddings/embeddings_20260522T033356_000038.parquet", "size_bytes": 4080000578, "uploaded_utc": "2026-05-22T05:44:13.745680+00:00"}
 {"type": "upload", "shard": "embeddings_20260522T033356_000039.parquet", "remote_path": "embeddings/embeddings_20260522T033356_000039.parquet", "size_bytes": 4080000167, "uploaded_utc": "2026-05-22T05:44:46.141274+00:00"}
 {"type": "upload", "shard": "embeddings_20260522T033356_000040.parquet", "remote_path": "embeddings/embeddings_20260522T033356_000040.parquet", "size_bytes": 2428637359, "uploaded_utc": "2026-05-22T05:50:09.790833+00:00"}
+{"type": "upload", "shard": "embeddings_20260522T033356_000041.parquet", "remote_path": "embeddings/embeddings_20260522T033356_000041.parquet", "size_bytes": 4080000882, "uploaded_utc": "2026-05-22T05:50:39.794394+00:00"}
+{"type": "upload", "shard": "embeddings_20260522T033356_000042.parquet", "remote_path": "embeddings/embeddings_20260522T033356_000042.parquet", "size_bytes": 4080002158, "uploaded_utc": "2026-05-22T05:51:09.461531+00:00"}
+{"type": "upload", "shard": "embeddings_20260522T033356_000043.parquet", "remote_path": "embeddings/embeddings_20260522T033356_000043.parquet", "size_bytes": 1986339490, "uploaded_utc": "2026-05-22T05:51:31.583919+00:00"}
