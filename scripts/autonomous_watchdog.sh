@@ -106,9 +106,9 @@ ensure embed $EMBED_CMD
 ensure upload $UPLOAD_CMD
 
 # Main loop: every 60 s, check; every 5 min, snapshot
-deadline=$(( $(date +%s) + 7*3600 ))
+deadline=$(( $(date +%s) + 24*3600 ))
 last_snapshot=0
-echo "[$(date -Is)] watchdog start — running for 7 hours" >> logs/watchdog.log
+echo "[$(date -Is)] watchdog start — running for 24 hours" >> logs/watchdog.log
 while [ "$(date +%s)" -lt "$deadline" ]; do
   ensure download $DOWNLOAD_CMD
   ensure embed $EMBED_CMD

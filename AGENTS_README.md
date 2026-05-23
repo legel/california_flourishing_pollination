@@ -16,16 +16,17 @@
 
 ---
 
-## 2. Live state (snapshot, update when you change anything)
+## 2. Live state (snapshot 2026-05-23T20:18 UTC, update when you change anything)
 
 | | |
 |---|---|
-| Master manifest | `data/processed/image_manifest.parquet` — **9,851,832 URLs / 5,000,043 observations / 16,400 species** (6,432 plants + 9,968 pollinators) |
-| Embedded so far | ~6.5M (66 %); HF has ~780 shards / 2.6 TB |
+| Master manifest (initial scope) | `data/processed/image_manifest.parquet` — **9,851,832 URLs / 5,000,043 observations / 16,400 species** (6,432 plants + 9,968 pollinators) |
+| Embedded so far (initial scope) | ~9.35M (95 %); HF has 1,072 shards / 3.53 TB |
+| In-flight scope expansion | Two additional GBIF batches preparing to push the dataset past 10 M embeddings — see §5.f |
 | HF dataset | https://huggingface.co/datasets/deepearth/california-flourishing-pollination |
-| Storage quota | 8.7 TB total; ~30 % used; projected ~3.8 TB final |
+| Storage quota | 8.7 TB total; ~40 % used; projected ~4.5 TB final after expansion |
 | Hardware | 1 × NVIDIA H200 (143 GB VRAM); ~1.3 TB local disk on `/home/legel`; 800 GB image-cache cap |
-| Pipeline ETA | ~5-8 h to embed all remaining; download is now the slow side |
+| Watchdog cycle | **24 hours** (was 7 h earlier) — `scripts/autonomous_watchdog.sh` |
 
 Always re-check with the live-stats one-liner in §9.
 
@@ -124,8 +125,8 @@ Watchdog (`scripts/autonomous_watchdog.sh`) re-launches any of these on death ev
 |---|---|---|
 | **download** | `python -m cfp.pipeline download` | `--manifest data/processed/image_manifest.parquet --image-dir /home/legel/cfp_images --concurrency 256 --per-host-concurrency 64 --cap-gb 800` |
 | **embed** | `python -m cfp.pipeline embed` | `--image-dir /home/legel/cfp_images --shard-dir /home/legel/cfp_shards --backbone vitl16 --image-size 224 --batch-size 32 --gpu-decode --with-phenovision --poll-seconds 60` |
-| **upload** | `python -m cfp.pipeline upload` | `--shard-dir /home/legel/cfp_shards --repo deepearth/california-flourishing-pollination --poll-seconds 300` |
-| **watchdog** | `scripts/autonomous_watchdog.sh` | runs 7 h then exits; rearm with `nohup bash scripts/autonomous_watchdog.sh > logs/watchdog.log 2>&1 &` |
+| **upload** | `python -m cfp.pipeline upload` | `--shard-dir /home/legel/cfp_shards --repo deepearth/california-flourishing-pollination --poll-seconds 300`  — uses `api.upload_large_folder` (one git commit per batch, ~290 MB/s; see B5) |
+| **watchdog** | `scripts/autonomous_watchdog.sh` | runs **24 hours** then exits; rearm with `nohup bash scripts/autonomous_watchdog.sh > logs/watchdog.log 2>&1 &` |
 
 PIDs are in `outputs/{name}.pid`. To stop everything cleanly:
 ```bash
@@ -158,6 +159,22 @@ kill $(cat outputs/watchdog.pid) $(cat outputs/{download,embed,upload}.pid 2>/de
   - `RO_0002622` visitsFlowersOf / `RO_0002623` flowersVisitedBy
 - CA geographic filter: bbox `[-124.55,-114.13] × [32.53, 42.01]` OR locality regex `(?i)\b(California|Calif\.|\bCA\b)\b` excluding `Baja\s+California`.
 - Output: `data/processed/globi_ca_plant_pollinator.parquet` (45,805 rows). Auxiliary signal for downstream pollination-network models.
+
+### 5f. Scope-expansion batches (in flight 2026-05-23)
+
+To push the dataset above 10 M embeddings while staying scientifically inside scope, two additional GBIF batches are queued. The autonomous integrator `scripts/integrate_birds_and_extras.sh` waits for both DwC-A zips, parses each (Calscape canonical name filter applied to plant rows; no filter on bird rows), merges into the master `image_manifest.parquet`, and signals the downloader to relaunch with the bigger manifest.
+
+| Batch | GBIF key | Predicate | Records | Out zip | DOI (when ready) |
+|---|---|---|---|---|---|
+| **Bird pollinators (expanded)** | `0009596-260519110011954` | `TAXON_KEY ∈ {5289 Trochilidae, 9201093 Ptiliogonatidae, 9321 Mimidae, 6176 Icteridae, 5263 Parulidae, 9285 Cardinalidae, 5215 Bombycillidae}` × CA × iNat-RG × StillImage | 326,544 | `data/raw/gbif/bird_pollinators_ca_inat.zip` | `data/processed/gbif_download_key_birds.json` |
+| **Plant extras (Calscape unmatched recovery)** | `0009598-260519110011954` | 49 unique GBIF taxon keys recovered from Calscape's 487 unmatched names — 29 cultivar-parent genera (Iris, Diplacus, Ceanothus, Arctostaphylos, Salvia, Heuchera, Epilobium, …) + 32 variety species heads + 62 fuzzy/HIGHERRANK matches | 4,611,190 | `data/raw/gbif/plants_extras_ca_inat.zip` | `data/processed/gbif_download_key_plants_extras.json` |
+
+Out of Calscape's 8,507 canonical natives, 487 (5.7 %) did not match the GBIF backbone on first pass:
+- 391 named cultivars in `Genus 'Cultivar Name'` form (e.g. *Arctostaphylos 'Emerald Carpet'*, *Arctostaphylos 'Howard McMinn'*, *Iris 'Canyon Snow'*) — cultivars aren't formal taxa in GBIF backbone. **Recovered via genus-level GBIF queries** (29 unique genera); Calscape canonical name filter at parse time keeps only natives in the master manifest.
+- 34 var./subsp./forma — recovered via species-head match.
+- 62 plain unmatched species — recovered via GBIF `strict=false` + HIGHERRANK acceptance.
+
+After integration, the master manifest is projected to land at **~11-12 M URLs** across ~17,000 species. See `data/processed/gbif_taxon_keys_extras.json` for the 49 new keys + full per-name match log.
 
 ### 5d. PhenoVision (flower / fruit labels)
 
@@ -418,9 +435,16 @@ Coverage is honest and Nature-paper-defensible; expanding scope is a Phase 1.5 t
 # kill running watchdog & workers
 kill $(cat outputs/watchdog.pid) $(cat outputs/{download,embed,upload}.pid 2>/dev/null)
 sleep 5
-# relaunch watchdog (it will spawn the three workers)
+# relaunch watchdog (24-h cycle; spawns and supervises the three workers)
 nohup bash scripts/autonomous_watchdog.sh > logs/watchdog.log 2>&1 &
 echo $! > outputs/watchdog.pid
+```
+
+**Integrate a new GBIF batch (after submitting one with `cfp.gbif batch submit`):**
+```bash
+# Wait + auto-parse + auto-merge + auto-restart-downloader (see scripts/integrate_birds_and_extras.sh
+# for the template; copy + adapt for your new zip path and any predicate-specific filtering).
+nohup bash scripts/integrate_birds_and_extras.sh > logs/integrate_<name>.log 2>&1 &
 ```
 
 **Resubmit a GBIF batch download** (when you want to expand species/predicate scope):
