@@ -78,16 +78,33 @@ def species_list() -> list[str]:
     return _species
 
 
+_umap_error: Optional[str] = None
+
+
 def umap_pack() -> Optional[dict]:
-    global _umap_pack
+    """Lazy-load the pretrained UMAP(1024->3) encoder + global channel ranges.
+
+    On failure (missing dep, corrupt download, ...) the error is captured in
+    _umap_error so the UI can surface "UMAP requested but failed: <reason>"
+    instead of silently falling back to PCA."""
+    global _umap_pack, _umap_error
     if _umap_pack is None:
         try:
             import joblib
+            import umap  # noqa: F401  — needed for the deserialized UMAP object
             p = hf_hub_download(REPO, UMAP_FILE, repo_type="dataset")
             _umap_pack = joblib.load(p)
-        except Exception:
+            _umap_error = None
+        except Exception as e:
             _umap_pack = {}
+            _umap_error = f"{type(e).__name__}: {e}"
+            print(f"[umap] load failed — falling back to PCA: {_umap_error}", flush=True)
     return _umap_pack if _umap_pack else None
+
+
+def umap_error() -> Optional[str]:
+    """Surface the last UMAP load error (None if not yet attempted or success)."""
+    return _umap_error
 
 
 # ─── shard row lookup ──────────────────────────────────────────────────────
@@ -152,12 +169,19 @@ def umap_rgb(patches_hwd: np.ndarray) -> Optional[np.ndarray]:
 
 
 def overlay_b64(patches_hwd: np.ndarray, method: str, resolution: int) -> Tuple[str, str]:
-    """Return (data-URL of upscaled overlay PNG, method label actually used)."""
-    rgb = umap_rgb(patches_hwd) if method == "UMAP" else None
-    actual = "UMAP"
+    """Return (data-URL of upscaled overlay PNG, method label actually used).
+
+    If UMAP is requested but unavailable, the second tuple element will be
+    "PCA (UMAP unavailable: <error>)" so the UI tells the truth."""
+    actual = method
+    rgb = None
+    if method == "UMAP":
+        rgb = umap_rgb(patches_hwd)
+        if rgb is None:
+            err = umap_error() or "encoder not loaded"
+            actual = f"PCA (UMAP fallback — {err})"
     if rgb is None:
         rgb = pca_rgb(patches_hwd)
-        actual = "PCA"
     img = Image.fromarray(rgb).resize((resolution, resolution), Image.BILINEAR)
     buf = io.BytesIO()
     img.save(buf, format="PNG")
