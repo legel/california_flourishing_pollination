@@ -2,23 +2,25 @@
 
 A Gradio Space that browses the deepearth/california-flourishing-pollination
 HF dataset record-by-record:
-  - photo from iNaturalist (browser-direct URL load — fast)
-  - PhenoVision flowering / fruiting probabilities
-  - DINOv3 14×14×1024 patch tokens → 3D RGB overlay
-      * PCA: per-observation SVD (slower per request, always works)
-      * UMAP: pretrained 1024→3 encoder (cross-species semantic, very fast)
-  - opacity slider + overlay resolution slider
-  - per-photo CC license + creator attribution + metadata
+  - photo from iNaturalist (browser-direct URL, fast)
+  - DINOv3 14×14×1024 patches → 3D RGB overlay
+      * PCA (per-observation SVD)
+      * UMAP (pretrained 1024→3 encoder for cross-species semantic coloring)
+  - Photo + overlay stacked via CSS so the **opacity slider is JS-driven**
+    (no server roundtrip; instant)
+  - Per-photo CC license + creator attribution + full metadata
+  - PhenoVision flowering / fruiting probabilities (with old-shard label-swap
+    correction — see PHENOVISION_FIX_TIMESTAMP below)
 
-Storage: ships only the ~225 MB master manifest + 110 MB shard index +
-~few-MB UMAP encoder. Embedding shards (3 GB each, 1,072 total) are
-pulled on demand from the parent dataset via hf_hub_download and cached
-on the Space's persistent disk.
+Storage strategy: ships only the ~225 MB master manifest + 110 MB shard
+index + ~1.5 GB UMAP encoder. Embedding shards (3 GB each, 1,072 total)
+are pulled on demand from the parent dataset and cached on the Space disk.
 """
 from __future__ import annotations
+import base64
 import io
-import time
-from typing import Optional
+import re
+from typing import Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -31,7 +33,13 @@ REPO = "deepearth/california-flourishing-pollination"
 MANIFEST_FILE = "manifests/image_manifest.parquet"
 SHARD_INDEX_FILE = "lookups/shard_index.parquet"
 UMAP_FILE = "lookups/umap_encoder.joblib"
-MAX_OBS = 200  # cap obs list per species
+MAX_OBS = 200
+
+# Shards with run_id >= this UTC stamp have the correct PhenoVision column
+# order. Older shards have flowering / fruiting columns swapped (a bug in
+# the original combined-extractor; vendor/phenovision/inference.py confirms
+# class_names = ['fruiting', 'flowering']).
+PHENOVISION_FIX_TIMESTAMP = "20260524T070916"
 
 
 # ─── lazy loaders ──────────────────────────────────────────────────────────
@@ -78,7 +86,7 @@ def umap_pack() -> Optional[dict]:
             p = hf_hub_download(REPO, UMAP_FILE, repo_type="dataset")
             _umap_pack = joblib.load(p)
         except Exception:
-            _umap_pack = {}  # mark as tried, not available
+            _umap_pack = {}
     return _umap_pack if _umap_pack else None
 
 
@@ -86,13 +94,13 @@ def umap_pack() -> Optional[dict]:
 _shard_cache: dict[str, pd.DataFrame] = {}
 
 
-def fetch_shard_row(url: str) -> Optional[pd.Series]:
-    """Lazy-load the relevant embedding shard and return the row matching URL."""
+def fetch_shard_row(url: str) -> Tuple[Optional[pd.Series], Optional[str]]:
+    """Return (row, shard_path). shard_path tells us which PhenoVision label era."""
     idx = shard_idx()
     if url not in idx.index:
-        return None
+        return None, None
     shard_path = idx.loc[url, "shard_path"]
-    if isinstance(shard_path, pd.Series):  # dup row in index
+    if isinstance(shard_path, pd.Series):
         shard_path = shard_path.iloc[0]
     if shard_path not in _shard_cache:
         local = hf_hub_download(REPO, shard_path, repo_type="dataset")
@@ -102,12 +110,22 @@ def fetch_shard_row(url: str) -> Optional[pd.Series]:
         ])
     df = _shard_cache[shard_path]
     match = df[df["image_url_large"] == url]
-    return match.iloc[0] if len(match) else None
+    return (match.iloc[0], shard_path) if len(match) else (None, shard_path)
+
+
+def pheno_corrected(srow: pd.Series, shard_path: str) -> Tuple[float, float]:
+    """Return (flowering, fruiting) with old-shard column-swap correction."""
+    m = re.search(r"embeddings_(\d{8}T\d{6})_", shard_path or "")
+    if m and m.group(1) >= PHENOVISION_FIX_TIMESTAMP:
+        # New shards: column names are correct.
+        return float(srow["phenovision_flowering_prob"]), float(srow["phenovision_fruiting_prob"])
+    # Old shards have columns swapped: the value stored as "_flowering_prob"
+    # is actually fruiting probability and vice versa.
+    return float(srow["phenovision_fruiting_prob"]), float(srow["phenovision_flowering_prob"])
 
 
 # ─── projections ───────────────────────────────────────────────────────────
 def pca_rgb(patches_hwd: np.ndarray) -> np.ndarray:
-    """Per-observation PCA: 14×14×1024 → 14×14×3 normalized to [0,255]."""
     h, w, d = patches_hwd.shape
     flat = patches_hwd.reshape(-1, d).astype(np.float32)
     flat -= flat.mean(0)
@@ -121,8 +139,6 @@ def pca_rgb(patches_hwd: np.ndarray) -> np.ndarray:
 
 
 def umap_rgb(patches_hwd: np.ndarray) -> Optional[np.ndarray]:
-    """Pretrained UMAP: 14×14×1024 → 14×14×3 using GLOBAL channel range
-    so colors are consistent across observations."""
     pack = umap_pack()
     if pack is None:
         return None
@@ -135,30 +151,41 @@ def umap_rgb(patches_hwd: np.ndarray) -> Optional[np.ndarray]:
     return (proj.reshape(h, w, 3) * 255).astype(np.uint8)
 
 
-def render_overlay(photo_bytes: bytes, patches_hwd: np.ndarray,
-                    method: str, opacity: float, resolution: int) -> Image.Image:
-    """Compose the photo with the patch-level projection overlay.
-
-    `resolution` controls upscale: higher = sharper image but blockier overlay
-    (since patches are 14×14)."""
+def overlay_b64(patches_hwd: np.ndarray, method: str, resolution: int) -> Tuple[str, str]:
+    """Return (data-URL of upscaled overlay PNG, method label actually used)."""
     rgb = umap_rgb(patches_hwd) if method == "UMAP" else None
+    actual = "UMAP"
     if rgb is None:
         rgb = pca_rgb(patches_hwd)
-    photo = Image.open(io.BytesIO(photo_bytes)).convert("RGB").resize(
-        (resolution, resolution), Image.BILINEAR)
-    overlay = Image.fromarray(rgb).resize((resolution, resolution), Image.BILINEAR)
-    return Image.blend(photo, overlay, opacity)
+        actual = "PCA"
+    img = Image.fromarray(rgb).resize((resolution, resolution), Image.BILINEAR)
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    return ("data:image/png;base64," + base64.b64encode(buf.getvalue()).decode(), actual)
+
+
+# ─── HTML composition ──────────────────────────────────────────────────────
+def stack_html(photo_url: str, overlay_url: Optional[str], opacity: float = 0.5) -> str:
+    """Photo + overlay stacked via absolute positioning. The overlay's CSS
+    opacity is mutated client-side by the slider's js callback."""
+    base = (f'<div class="cfp-stack">'
+            f'<img src="{photo_url}" class="cfp-photo" alt="iNaturalist photo">')
+    if overlay_url:
+        base += (f'<img src="{overlay_url}" id="cfp-overlay" class="cfp-overlay" '
+                 f'style="opacity:{opacity:.2f}" alt="DINOv3 overlay">')
+    base += "</div>"
+    return base
 
 
 # ─── core render ───────────────────────────────────────────────────────────
 def render(url: str, method: str, opacity: float, resolution: int):
-    """Return (photo_url, overlay_PIL, pheno_md, meta_md, status_md, url_state)."""
+    """Return (html, pheno_md, meta_md, status_md, url_state)."""
     if not url:
-        return None, None, "", "", "", ""
+        return "", "", "", "", ""
     m = manifest()
     row = m[m["image_url_large"] == url]
     if row.empty:
-        return None, None, "", "", "URL not found in manifest", ""
+        return stack_html(url, None, opacity), "", "", "URL not found in manifest", ""
     row = row.iloc[0]
 
     meta = (f"### {row['taxon_name']}\n"
@@ -170,28 +197,25 @@ def render(url: str, method: str, opacity: float, resolution: int):
             f"📷 {row['creator']} — `{row['license']}`  \n"
             f"[iNaturalist photo source]({url})")
 
-    srow = fetch_shard_row(url)
+    srow, shard_path = fetch_shard_row(url)
     if srow is None:
-        return url, None, "_(no embedding shard found for this URL)_", meta, "", url
+        return stack_html(url, None, opacity), "", meta, \
+               "_(no embedding shard found for this URL)_", url
 
-    pheno = (f"### PhenoVision  \n"
-             f"🌸 flowering: **{srow['phenovision_flowering_prob']:.3f}**  \n"
-             f"🍒 fruiting: **{srow['phenovision_fruiting_prob']:.3f}**")
-
-    try:
-        r = requests.get(url, timeout=15)
-        r.raise_for_status()
-        photo_bytes = r.content
-    except Exception as e:
-        return url, None, pheno, meta, f"iNat photo fetch failed: {e}", url
+    flowering, fruiting = pheno_corrected(srow, shard_path)
+    pheno = (f"### PhenoVision\n"
+             f"🌸 flowering: **{flowering:.3f}**  \n"
+             f"🍒 fruiting: **{fruiting:.3f}**")
 
     patches = np.frombuffer(srow["patches_fp16"], dtype=np.float16).reshape(
         tuple(srow["patches_shape"])).astype(np.float32)
-    overlay = render_overlay(photo_bytes, patches, method, opacity, resolution)
-    return url, overlay, pheno, meta, f"_overlay: {method} @ {resolution}px, {int(opacity*100)}% opacity_", url
+    ovl_url, actual_method = overlay_b64(patches, method, resolution)
+    html = stack_html(url, ovl_url, opacity)
+    status = f"_overlay: {actual_method} @ {resolution}px (opacity changes are client-side and instant)_"
+    return html, pheno, meta, status, url
 
 
-# ─── observation list builders ─────────────────────────────────────────────
+# ─── list builders / random / events ───────────────────────────────────────
 def list_obs_for_species(name: str) -> pd.DataFrame:
     if not name:
         return pd.DataFrame(columns=["observed_on", "locality", "image_url_large"])
@@ -212,10 +236,10 @@ def random_any(method: str, opacity: float, resolution: int):
     row = m.sample(1).iloc[0]
     species = row["taxon_name"]
     df = list_obs_for_species(species)
-    photo, overlay, pheno, meta, status, url = render(row["image_url_large"], method, opacity, resolution)
+    html, pheno, meta, status, url = render(row["image_url_large"], method, opacity, resolution)
     total = (m["taxon_name"] == species).sum()
     return (species, df, f"random pick: **{species}** — showing {len(df)} of {total:,} observations",
-            photo, overlay, pheno, meta, status, url)
+            html, pheno, meta, status, url)
 
 
 def random_in_species(name: str, method: str, opacity: float, resolution: int):
@@ -224,41 +248,83 @@ def random_in_species(name: str, method: str, opacity: float, resolution: int):
     m = manifest()
     sub = m[m["taxon_name"] == name]
     if sub.empty:
-        return name, pd.DataFrame(), f"no observations for {name}", None, None, "", "", "", ""
+        return name, pd.DataFrame(), f"no observations for {name}", "", "", "", "", ""
     row = sub.sample(1).iloc[0]
     df = list_obs_for_species(name)
-    photo, overlay, pheno, meta, status, url = render(row["image_url_large"], method, opacity, resolution)
+    html, pheno, meta, status, url = render(row["image_url_large"], method, opacity, resolution)
     return (name, df, f"random in **{name}** — showing {len(df)} of {len(sub):,} observations",
-            photo, overlay, pheno, meta, status, url)
+            html, pheno, meta, status, url)
 
 
 def on_obs_select(evt: gr.SelectData, df: pd.DataFrame,
                    method: str, opacity: float, resolution: int):
     if df is None or len(df) == 0 or evt.index is None:
-        return None, None, "", "", "", ""
+        return "", "", "", "", ""
     row_idx = evt.index[0] if isinstance(evt.index, (list, tuple)) else evt.index
     url = df.iloc[row_idx]["image_url_large"]
     return render(url, method, opacity, resolution)
 
 
 def recompute(url_holder: str, method: str, opacity: float, resolution: int):
-    """Re-render the current photo with new overlay settings."""
+    """Re-render only when method or resolution changes (opacity is JS-driven)."""
     if not url_holder:
-        return None, None, "", "", "", ""
+        return "", "", "", "", ""
     return render(url_holder, method, opacity, resolution)
 
 
 # ─── UI ────────────────────────────────────────────────────────────────────
+CUSTOM_CSS = """
+@import url('https://fonts.googleapis.com/css2?family=Oxygen:wght@300;400;700&display=swap');
+*, *::before, *::after { font-family: 'Oxygen', 'Helvetica Neue', sans-serif !important; }
+code, pre, kbd, samp { font-family: 'Oxygen Mono', 'JetBrains Mono', 'Menlo', monospace !important; }
+.cfp-stack {
+    position: relative;
+    display: inline-block;
+    max-width: 100%;
+    border-radius: 8px;
+    overflow: hidden;
+    background: #111;
+}
+.cfp-photo {
+    display: block;
+    max-width: 100%;
+    width: auto;
+    height: auto;
+    border-radius: 8px;
+}
+.cfp-overlay {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    pointer-events: none;
+    border-radius: 8px;
+    mix-blend-mode: normal;
+    image-rendering: auto;
+    transition: opacity 0.05s linear;
+}
+"""
+
+JS_OPACITY = """
+(v) => {
+  const el = document.getElementById('cfp-overlay');
+  if (el) el.style.opacity = v;
+  return v;
+}
+"""
+
 with gr.Blocks(title="California Flourishing & Pollination",
-                theme=gr.themes.Soft()) as demo:
-    gr.Markdown("# 🌼 California Flourishing & Pollination — Viewer")
+                theme=gr.themes.Soft(font=[gr.themes.GoogleFont("Oxygen"), "sans-serif"]),
+                css=CUSTOM_CSS) as demo:
+    gr.Markdown("# 🌼 California Flourishing & Pollination")
     gr.Markdown(
         "Browse **10M+ iNaturalist Research-grade observations** of "
         "California-native plants + flying pollinators, encoded with "
         "**DINOv3 ViT-L/16** spatial features + **PhenoVision** "
-        "flowering/fruiting probabilities. "
-        "Patch-grid (14×14×1024) projected to 3D RGB via PCA "
-        "(per-observation) or UMAP (pretrained, cross-species semantic)."
+        "flowering/fruiting probabilities. The 14×14×1024 patch grid is "
+        "projected to 3D RGB and overlaid on the photo. "
+        "*Opacity is client-side instant; method + resolution recompute the overlay.*"
     )
 
     current_url = gr.State("")
@@ -281,18 +347,16 @@ with gr.Blocks(title="California Flourishing & Pollination",
                 label="Observations — click a row to view",
                 interactive=False,
                 wrap=True,
-                max_height=550,
+                max_height=600,
             )
 
         with gr.Column(scale=3):
+            stacked = gr.HTML(label="iNat photo + DINOv3 patch-grid overlay")
             with gr.Row():
-                photo = gr.Image(label="iNat photo", height=420)
-                overlay = gr.Image(label="DINOv3 patch-grid overlay", height=420)
-            with gr.Row():
-                method = gr.Radio(["PCA", "UMAP"], value="PCA",
-                                   label="Projection 1024→3", scale=2)
-                opacity = gr.Slider(0.0, 1.0, value=0.5, step=0.05,
-                                     label="Overlay opacity", scale=3)
+                method = gr.Radio(["PCA", "UMAP"], value="UMAP",
+                                   label="Projection (1024 → 3)", scale=2)
+                opacity = gr.Slider(0.0, 1.0, value=0.5, step=0.01,
+                                     label="Overlay opacity (instant)", scale=3)
                 resolution = gr.Slider(224, 1120, value=672, step=112,
                                         label="Overlay resolution (px)", scale=3)
             render_status = gr.Markdown()
@@ -307,27 +371,30 @@ with gr.Blocks(title="California Flourishing & Pollination",
     obs_table.select(
         on_obs_select,
         inputs=[obs_table, method, opacity, resolution],
-        outputs=[photo, overlay, pheno_md, meta_md, render_status, current_url],
+        outputs=[stacked, pheno_md, meta_md, render_status, current_url],
     )
 
     random_any_btn.click(
         random_any, inputs=[method, opacity, resolution],
-        outputs=[species, obs_table, status, photo, overlay, pheno_md, meta_md,
+        outputs=[species, obs_table, status, stacked, pheno_md, meta_md,
                  render_status, current_url],
     )
 
     random_sp_btn.click(
         random_in_species, inputs=[species, method, opacity, resolution],
-        outputs=[species, obs_table, status, photo, overlay, pheno_md, meta_md,
+        outputs=[species, obs_table, status, stacked, pheno_md, meta_md,
                  render_status, current_url],
     )
 
-    # Re-render when overlay settings change
-    for ctrl in (method, opacity, resolution):
+    # Method + resolution → server recompute (need to rebuild overlay PNG)
+    for ctrl in (method, resolution):
         ctrl.change(
             recompute, inputs=[current_url, method, opacity, resolution],
-            outputs=[photo, overlay, pheno_md, meta_md, render_status, current_url],
+            outputs=[stacked, pheno_md, meta_md, render_status, current_url],
         )
+
+    # Opacity → JS-only CSS update (no server roundtrip, no recompute)
+    opacity.input(None, inputs=opacity, outputs=None, js=JS_OPACITY)
 
 
 if __name__ == "__main__":

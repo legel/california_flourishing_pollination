@@ -121,8 +121,10 @@ def main() -> None:
                 logits = model(pixel_values=batch).logits.float()
                 probs = torch.sigmoid(logits).cpu().numpy()
                 for j, i in enumerate(idxs):
-                    flowering[i] = probs[j, 0]
-                    fruiting[i] = probs[j, 1] if probs.shape[1] > 1 else 0.0
+                    # PhenoVision class_names = ['fruiting', 'flowering'] —
+                    # index 0 is fruiting, index 1 is flowering.
+                    fruiting[i] = probs[j, 0]
+                    flowering[i] = probs[j, 1] if probs.shape[1] > 1 else 0.0
 
         df["phenovision_flowering_prob"] = flowering
         df["phenovision_fruiting_prob"] = fruiting

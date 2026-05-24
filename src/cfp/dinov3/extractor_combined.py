@@ -192,10 +192,14 @@ class DINOv3PhenoVisionExtractor:
 
         # PhenoVision forward (same preprocessed batch)
         out_p = self.phenovision(pixel_values=batch)
-        # Multi-label sigmoid: logits shape (N, 2). index 0 = flowering, 1 = fruiting.
+        # Multi-label sigmoid: logits shape (N, 2). Per phenobase/phenovision and
+        # vendor/phenovision/inference.py: class_names = ['fruiting', 'flowering']
+        # so index 0 = fruiting, index 1 = flowering. (We had this swapped earlier
+        # — all shards uploaded before 2026-05-24T07:30 UTC have the column NAMES
+        # flipped; the Space app swaps them on read for the UI.)
         probs = torch.sigmoid(out_p.logits.float())
-        flowering = probs[:, 0].cpu().numpy()
-        fruiting = probs[:, 1].cpu().numpy() if probs.shape[1] > 1 else np.zeros(n_ok, dtype=np.float32)
+        fruiting = probs[:, 0].cpu().numpy()
+        flowering = probs[:, 1].cpu().numpy() if probs.shape[1] > 1 else np.zeros(n_ok, dtype=np.float32)
 
         return (CombinedOutput(
             cls=cls.float().cpu().numpy(),
