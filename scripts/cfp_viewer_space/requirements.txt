@@ -1,0 +1,8 @@
+gradio==5.49.1
+huggingface_hub>=0.30,<2.0
+pandas
+pillow
+numpy
+requests
+pyarrow
+audioop-lts; python_version >= "3.13"

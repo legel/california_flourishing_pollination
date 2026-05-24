@@ -1,3 +1,16 @@
+---
+title: California Flourishing & Pollination Viewer
+emoji: 🌼
+colorFrom: green
+colorTo: yellow
+sdk: gradio
+sdk_version: "5.49.1"
+app_file: app.py
+pinned: false
+license: mit
+short_description: Browse 10M iNat × DINOv3 × PhenoVision records
+---
+
 # CFP Viewer Space
 
 An interactive browser for the `deepearth/california-flourishing-pollination`
