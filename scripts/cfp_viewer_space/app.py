@@ -33,6 +33,7 @@ REPO = "deepearth/california-flourishing-pollination"
 MANIFEST_FILE = "manifests/image_manifest.parquet"
 SHARD_INDEX_FILE = "lookups/shard_index.parquet"
 UMAP_FILE = "lookups/umap_encoder.joblib"
+GLOBAL_PCA_FILE = "lookups/global_pca.npz"
 MAX_OBS = 200
 
 # Shards with run_id >= this UTC stamp have the correct PhenoVision column
@@ -107,6 +108,28 @@ def umap_error() -> Optional[str]:
     return _umap_error
 
 
+_global_pca: Optional[dict] = None
+
+
+def global_pca_pack() -> Optional[dict]:
+    """Lazy-load the global PCA arrays (12 KB, no class deserialization)."""
+    global _global_pca
+    if _global_pca is None:
+        try:
+            p = hf_hub_download(REPO, GLOBAL_PCA_FILE, repo_type="dataset")
+            z = np.load(p)
+            _global_pca = {
+                "components": z["components"].astype(np.float32),   # (1024, 3)
+                "mean": z["mean"].astype(np.float32),                # (1024,)
+                "channel_min": z["channel_min"].astype(np.float32),  # (3,)
+                "channel_max": z["channel_max"].astype(np.float32),
+            }
+        except Exception as e:
+            print(f"[global_pca] load failed: {e}", flush=True)
+            _global_pca = {}
+    return _global_pca if _global_pca else None
+
+
 # ─── shard row lookup ──────────────────────────────────────────────────────
 _shard_cache: dict[str, pd.DataFrame] = {}
 
@@ -143,6 +166,8 @@ def pheno_corrected(srow: pd.Series, shard_path: str) -> Tuple[float, float]:
 
 # ─── projections ───────────────────────────────────────────────────────────
 def pca_rgb(patches_hwd: np.ndarray) -> np.ndarray:
+    """Per-observation PCA (sign-flips between observations — not cross-image
+    consistent). Kept for inspection; default is global PCA."""
     h, w, d = patches_hwd.shape
     flat = patches_hwd.reshape(-1, d).astype(np.float32)
     flat -= flat.mean(0)
@@ -152,6 +177,21 @@ def pca_rgb(patches_hwd: np.ndarray) -> np.ndarray:
     proj = flat @ top3
     rng = proj.max(0) - proj.min(0)
     proj = (proj - proj.min(0)) / (rng + 1e-8)
+    return (proj.reshape(h, w, 3) * 255).astype(np.uint8)
+
+
+def global_pca_rgb(patches_hwd: np.ndarray) -> Optional[np.ndarray]:
+    """Cross-image consistent PCA — projection matrix fitted on 500K random
+    patches; per-channel min/max from training are used for normalization,
+    so the same patch concept gets the same color across all observations."""
+    pack = global_pca_pack()
+    if pack is None:
+        return None
+    h, w, d = patches_hwd.shape
+    flat = patches_hwd.reshape(-1, d).astype(np.float32)
+    proj = (flat - pack["mean"]) @ pack["components"]
+    proj = np.clip((proj - pack["channel_min"]) /
+                   (pack["channel_max"] - pack["channel_min"] + 1e-8), 0, 1)
     return (proj.reshape(h, w, 3) * 255).astype(np.uint8)
 
 
@@ -171,15 +211,24 @@ def umap_rgb(patches_hwd: np.ndarray) -> Optional[np.ndarray]:
 def overlay_b64(patches_hwd: np.ndarray, method: str, resolution: int) -> Tuple[str, str]:
     """Return (data-URL of upscaled overlay PNG, method label actually used).
 
-    If UMAP is requested but unavailable, the second tuple element will be
-    "PCA (UMAP unavailable: <error>)" so the UI tells the truth."""
-    actual = method
+    Method options:
+      'UMAP'         — pretrained UMAP(1024->3) cross-image semantic; falls
+                       back to global PCA if joblib deserialization fails
+      'Global PCA'   — top-3 PCA components fitted on 500K patches; cross-
+                       image consistent; tiny (12 KB), always loads
+      'Per-image PCA' — per-observation SVD; sign-flips per image
+    """
     rgb = None
+    actual = method
     if method == "UMAP":
         rgb = umap_rgb(patches_hwd)
         if rgb is None:
-            err = umap_error() or "encoder not loaded"
-            actual = f"PCA (UMAP fallback — {err})"
+            rgb = global_pca_rgb(patches_hwd)
+            actual = f"Global PCA (UMAP fallback — {umap_error() or 'encoder unavailable'})"
+    elif method == "Global PCA":
+        rgb = global_pca_rgb(patches_hwd)
+        if rgb is None:
+            actual = "Per-image PCA (Global PCA fallback)"
     if rgb is None:
         rgb = pca_rgb(patches_hwd)
     img = Image.fromarray(rgb).resize((resolution, resolution), Image.BILINEAR)
@@ -282,11 +331,29 @@ def random_in_species(name: str, method: str, opacity: float, resolution: int):
 
 def on_obs_select(evt: gr.SelectData, df: pd.DataFrame,
                    method: str, opacity: float, resolution: int):
-    if df is None or len(df) == 0 or evt.index is None:
-        return "", "", "", "", ""
-    row_idx = evt.index[0] if isinstance(evt.index, (list, tuple)) else evt.index
-    url = df.iloc[row_idx]["image_url_large"]
-    return render(url, method, opacity, resolution)
+    if df is None or evt.index is None:
+        return "", "", "", "_(no row selected)_", ""
+    # Gradio 5.x Dataframe.select event: evt.index is [row, col] for a cell
+    # click. Coerce to row index.
+    idx = evt.index
+    if isinstance(idx, (list, tuple)):
+        row_idx = int(idx[0])
+    else:
+        row_idx = int(idx)
+    # df may be a pandas DataFrame or a list-of-lists in Gradio 5.x —
+    # normalize.
+    if isinstance(df, pd.DataFrame):
+        if row_idx >= len(df):
+            return "", "", "", f"_(row {row_idx} out of bounds)_", ""
+        row = df.iloc[row_idx]
+        url = row.get("image_url_large") or (row.iloc[2] if len(row) > 2 else None)
+    else:
+        if not df or row_idx >= len(df):
+            return "", "", "", "_(empty table)_", ""
+        url = df[row_idx][2] if len(df[row_idx]) > 2 else None
+    if not url:
+        return "", "", "", "_(no URL in selected row)_", ""
+    return render(str(url), method, opacity, resolution)
 
 
 def recompute(url_holder: str, method: str, opacity: float, resolution: int):
@@ -368,8 +435,11 @@ with gr.Blocks(title="California Flourishing & Pollination",
                 headers=["observed_on", "locality", "image_url_large"],
                 datatype=["str", "str", "str"],
                 row_count=(0, "dynamic"),
-                label="Observations — click a row to view",
-                interactive=False,
+                label="Observations — click any cell in a row to view",
+                # interactive=True is required in Gradio 5.x for the .select
+                # event to fire on cell clicks; cells become editable but we
+                # never read edits back.
+                interactive=True,
                 wrap=True,
                 max_height=600,
             )
@@ -377,8 +447,10 @@ with gr.Blocks(title="California Flourishing & Pollination",
         with gr.Column(scale=3):
             stacked = gr.HTML(label="iNat photo + DINOv3 patch-grid overlay")
             with gr.Row():
-                method = gr.Radio(["PCA", "UMAP"], value="UMAP",
-                                   label="Projection (1024 → 3)", scale=2)
+                method = gr.Radio(
+                    ["Global PCA", "UMAP", "Per-image PCA"], value="Global PCA",
+                    label="Projection (1024 → 3)", scale=2,
+                )
                 opacity = gr.Slider(0.0, 1.0, value=0.5, step=0.01,
                                      label="Overlay opacity (instant)", scale=3)
                 resolution = gr.Slider(224, 1120, value=672, step=112,
