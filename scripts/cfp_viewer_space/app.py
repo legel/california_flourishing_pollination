@@ -301,7 +301,9 @@ def on_species_change(name: str):
     df = list_obs_for_species(name)
     m = manifest()
     total = (m["taxon_name"] == name).sum() if name else 0
-    return df, f"showing {len(df)} of {total:,} observations for **{name}**"
+    samples = df.values.tolist() if len(df) else []
+    return gr.Dataset(samples=samples), \
+        f"showing {len(samples)} of {total:,} observations for **{name}**"
 
 
 def random_any(method: str, opacity: float, resolution: int):
@@ -309,9 +311,11 @@ def random_any(method: str, opacity: float, resolution: int):
     row = m.sample(1).iloc[0]
     species = row["taxon_name"]
     df = list_obs_for_species(species)
+    samples = df.values.tolist() if len(df) else []
     html, pheno, meta, status, url = render(row["image_url_large"], method, opacity, resolution)
     total = (m["taxon_name"] == species).sum()
-    return (species, df, f"random pick: **{species}** — showing {len(df)} of {total:,} observations",
+    return (species, gr.Dataset(samples=samples),
+            f"random pick: **{species}** — showing {len(samples)} of {total:,} observations",
             html, pheno, meta, status, url)
 
 
@@ -321,36 +325,21 @@ def random_in_species(name: str, method: str, opacity: float, resolution: int):
     m = manifest()
     sub = m[m["taxon_name"] == name]
     if sub.empty:
-        return name, pd.DataFrame(), f"no observations for {name}", "", "", "", "", ""
+        return name, gr.Dataset(samples=[]), f"no observations for {name}", "", "", "", "", ""
     row = sub.sample(1).iloc[0]
     df = list_obs_for_species(name)
+    samples = df.values.tolist() if len(df) else []
     html, pheno, meta, status, url = render(row["image_url_large"], method, opacity, resolution)
-    return (name, df, f"random in **{name}** — showing {len(df)} of {len(sub):,} observations",
+    return (name, gr.Dataset(samples=samples),
+            f"random in **{name}** — showing {len(samples)} of {len(sub):,} observations",
             html, pheno, meta, status, url)
 
 
-def on_obs_select(evt: gr.SelectData, df: pd.DataFrame,
-                   method: str, opacity: float, resolution: int):
-    if df is None or evt.index is None:
+def on_obs_select(sample, method: str, opacity: float, resolution: int):
+    """gr.Dataset.click passes the clicked sample (list) as the first arg."""
+    if not sample or len(sample) < 3:
         return "", "", "", "_(no row selected)_", ""
-    # Gradio 5.x Dataframe.select event: evt.index is [row, col] for a cell
-    # click. Coerce to row index.
-    idx = evt.index
-    if isinstance(idx, (list, tuple)):
-        row_idx = int(idx[0])
-    else:
-        row_idx = int(idx)
-    # df may be a pandas DataFrame or a list-of-lists in Gradio 5.x —
-    # normalize.
-    if isinstance(df, pd.DataFrame):
-        if row_idx >= len(df):
-            return "", "", "", f"_(row {row_idx} out of bounds)_", ""
-        row = df.iloc[row_idx]
-        url = row.get("image_url_large") or (row.iloc[2] if len(row) > 2 else None)
-    else:
-        if not df or row_idx >= len(df):
-            return "", "", "", "_(empty table)_", ""
-        url = df[row_idx][2] if len(df[row_idx]) > 2 else None
+    url = sample[2]
     if not url:
         return "", "", "", "_(no URL in selected row)_", ""
     return render(str(url), method, opacity, resolution)
@@ -431,17 +420,18 @@ with gr.Blocks(title="California Flourishing & Pollination",
     with gr.Row():
         with gr.Column(scale=2):
             status = gr.Markdown()
-            obs_table = gr.Dataframe(
+            # gr.Dataset is purpose-built for clickable rows (vs gr.Dataframe
+            # which either blocks .select with interactive=False or makes the
+            # cells text-editable with interactive=True).
+            obs_table = gr.Dataset(
+                components=[gr.Textbox(visible=False),
+                            gr.Textbox(visible=False),
+                            gr.Textbox(visible=False)],
                 headers=["observed_on", "locality", "image_url_large"],
-                datatype=["str", "str", "str"],
-                row_count=(0, "dynamic"),
-                label="Observations — click any cell in a row to view",
-                # interactive=True is required in Gradio 5.x for the .select
-                # event to fire on cell clicks; cells become editable but we
-                # never read edits back.
-                interactive=True,
-                wrap=True,
-                max_height=600,
+                samples=[],
+                label="Observations — click a row to view",
+                samples_per_page=10,
+                type="values",
             )
 
         with gr.Column(scale=3):
@@ -464,7 +454,7 @@ with gr.Blocks(title="California Flourishing & Pollination",
 
     species.change(on_species_change, inputs=species, outputs=[obs_table, status])
 
-    obs_table.select(
+    obs_table.click(
         on_obs_select,
         inputs=[obs_table, method, opacity, resolution],
         outputs=[stacked, pheno_md, meta_md, render_status, current_url],
