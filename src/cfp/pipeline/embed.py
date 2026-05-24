@@ -262,6 +262,25 @@ def embed(
     new_ids: list[int] = []
     n_done = 0
 
+    # Background-thread shard writer + sidecar deleter so GPU isn't blocked
+    # while the 4 GB parquet flushes (~5-10 s of pure I/O).
+    import concurrent.futures as _futures
+    _io_pool = _futures.ThreadPoolExecutor(max_workers=2, thread_name_prefix="cfp-io")
+    _bg_flushes: list = []
+
+    def _bg_flush_shard(rows_snap: list[dict], idx: int, urls_snap: list[str]) -> None:
+        out = _flush_shard(rows_snap, shard_dir, idx, run_id=run_id)
+        _append_checkpoint(checkpoint, urls_snap)
+        console.print(f"[green]flushed shard[/] {out}  ({len(rows_snap)} rows)")
+
+    def _bg_unlink(paths: list[Path]) -> None:
+        for p in paths:
+            try:
+                p.unlink(missing_ok=True)
+                p.with_suffix(".json").unlink(missing_ok=True)
+            except OSError:
+                pass
+
     batch_imgs: list = []  # PIL.Image for cpu path, raw bytes for gpu path
     batch_meta: list[dict] = []
     batch_paths: list[Path] = []
@@ -322,18 +341,15 @@ def embed(
                 row["phenovision_repo"] = getattr(extractor, "phenovision_repo", "phenobase/phenovision")
             shard_rows.append(row)
             new_ids.append(str(meta.get("image_url_large") or meta.get("url") or meta["gbif_occurrence_id"]))
-        if delete_after:
-            for p in surviving_paths:
-                try:
-                    p.unlink(missing_ok=True)
-                    p.with_suffix(".json").unlink(missing_ok=True)
-                except OSError:
-                    pass
+        if delete_after and surviving_paths:
+            # Async unlink — bytes already consumed.
+            _bg_flushes.append(_io_pool.submit(_bg_unlink, list(surviving_paths)))
         if len(shard_rows) >= images_per_shard:
-            out_path = _flush_shard(shard_rows, shard_dir, shard_idx, run_id=run_id)
-            console.print(f"[green]flushed shard[/] {out_path}  ({len(shard_rows)} rows)")
+            # Async shard write — bytes already in shard_rows.
+            _bg_flushes.append(_io_pool.submit(
+                _bg_flush_shard, list(shard_rows), shard_idx, list(new_ids)
+            ))
             shard_idx += 1
-            _append_checkpoint(checkpoint, new_ids)
             shard_rows = []
             new_ids = []
         batch_imgs.clear()
@@ -342,7 +358,7 @@ def embed(
 
     import time as _time
     rounds = 0
-    num_workers = int(os.environ.get("CFP_EMBED_WORKERS", "8"))
+    num_workers = int(os.environ.get("CFP_EMBED_WORKERS", "16"))
     while True:
         rounds += 1
         round_done = 0
@@ -367,8 +383,9 @@ def embed(
             shuffle=False,
             num_workers=num_workers,
             collate_fn=_collate_passthrough,
-            prefetch_factor=4,
-            persistent_workers=False,
+            prefetch_factor=8,           # was 4 — keep pipeline deeper
+            persistent_workers=False,     # workers respawn each round
+            pin_memory=False,             # bytes-only path, no pin needed
         )
 
         with Progress(
@@ -410,12 +427,16 @@ def embed(
                 round_done += len(batch)
                 prog.update(tid, advance=len(batch))
             if shard_rows:
-                out_path = _flush_shard(shard_rows, shard_dir, shard_idx, run_id=run_id)
-                console.print(f"[green]flushed final shard[/] {out_path}  ({len(shard_rows)} rows)")
-                _append_checkpoint(checkpoint, new_ids)
+                # End-of-round flush — also async; subsequent rounds keep
+                # working without blocking.
+                _bg_flushes.append(_io_pool.submit(
+                    _bg_flush_shard, list(shard_rows), shard_idx, list(new_ids)
+                ))
                 shard_idx += 1
                 shard_rows = []
                 new_ids = []
+            # Drain any completed background tasks (free memory, propagate errors)
+            _bg_flushes[:] = [f for f in _bg_flushes if not f.done() or (f.result() or True)]
 
         if poll_seconds <= 0:
             break

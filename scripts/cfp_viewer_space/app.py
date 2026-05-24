@@ -27,10 +27,15 @@ import requests
 from PIL import Image
 from huggingface_hub import hf_hub_download
 
+import json
+import threading
+from pathlib import Path
+
 REPO = "deepearth/california-flourishing-pollination"
 MANIFEST_FILE = "manifests/image_manifest.parquet"
 SHARD_INDEX_FILE = "lookups/shard_index.parquet"
 UMAP_NUMPY_FILE = "lookups/umap_numpy.npz"
+SPECIES_LIST_FILE = Path(__file__).parent / "species_list.json"
 MAX_OBS = 200
 DEFAULT_SPECIES = "Arctostaphylos pallida"
 
@@ -70,11 +75,36 @@ def shard_idx() -> pd.DataFrame:
 
 
 def species_list() -> list[str]:
+    """Static 16K-species list shipped with the Space (404 KB JSON, loads
+    instantly — vs the 226 MB manifest download)."""
     global _species
     if _species is None:
-        m = manifest()
-        _species = sorted(m["taxon_name"].dropna().unique().tolist())
+        if SPECIES_LIST_FILE.exists():
+            _species = json.loads(SPECIES_LIST_FILE.read_text())
+        else:
+            # fallback: derive from manifest (slower; only used if static missing)
+            _species = sorted(manifest()["taxon_name"].dropna().unique().tolist())
     return _species
+
+
+def warm_caches_background() -> None:
+    """Kick off slow loads in a daemon thread so the UI is responsive
+    immediately. Runs at Space boot, not on demo.load."""
+    def _warm():
+        try:
+            print("[warm] manifest…", flush=True)
+            manifest()
+            print("[warm] shard index…", flush=True)
+            shard_idx()
+            print("[warm] umap encoder…", flush=True)
+            umap_pack()
+            print("[warm] DONE", flush=True)
+        except Exception as e:
+            print(f"[warm] failed: {e}", flush=True)
+    threading.Thread(target=_warm, daemon=True).start()
+
+
+warm_caches_background()
 
 
 def umap_pack() -> Optional[dict]:
@@ -142,7 +172,16 @@ def pheno_corrected(srow: pd.Series, shard_path: str) -> Tuple[float, float]:
 
 
 # ─── UMAP projection ───────────────────────────────────────────────────────
-def umap_rgb(patches_hwd: np.ndarray) -> Optional[np.ndarray]:
+def umap_rgb(patches_hwd: np.ndarray, normalize_per_image: bool = False) -> Optional[np.ndarray]:
+    """Project DINOv3 patches to RGB via pretrained UMAP.
+
+    normalize_per_image=False: use TRAINING-global channel ranges → colors
+        are consistent across all observations (same patch concept → same
+        color). Best for cross-image comparison.
+    normalize_per_image=True:  use THIS image's min/max per channel → max
+        visual contrast within the image (each pixel's color is divided by
+        the image's own range). Best for spotting fine structure.
+    """
     pack = umap_pack()
     if pack is None:
         return None
@@ -153,13 +192,17 @@ def umap_rgb(patches_hwd: np.ndarray) -> Optional[np.ndarray]:
     weights = weights / weights.sum(axis=1, keepdims=True)
     selected = pack["training_embeddings"][idxs]   # (N, K, 3)
     proj = (weights[..., None] * selected).sum(axis=1)  # (N, 3)
-    proj = np.clip((proj - pack["channel_min"]) /
-                    (pack["channel_max"] - pack["channel_min"] + 1e-8), 0, 1)
+    if normalize_per_image:
+        cmin = proj.min(0); cmax = proj.max(0)
+    else:
+        cmin = pack["channel_min"]; cmax = pack["channel_max"]
+    proj = np.clip((proj - cmin) / (cmax - cmin + 1e-8), 0, 1)
     return (proj.reshape(h, w, 3) * 255).astype(np.uint8)
 
 
-def overlay_b64(patches_hwd: np.ndarray, resolution: int) -> Tuple[str, str]:
-    rgb = umap_rgb(patches_hwd)
+def overlay_b64(patches_hwd: np.ndarray, resolution: int,
+                 normalize_per_image: bool = False) -> Tuple[str, str]:
+    rgb = umap_rgb(patches_hwd, normalize_per_image=normalize_per_image)
     if rgb is None:
         # Last-resort fallback: per-image PCA (sign-flips per image, but
         # at least something shows)
@@ -172,7 +215,9 @@ def overlay_b64(patches_hwd: np.ndarray, resolution: int) -> Tuple[str, str]:
         rgb = (proj.reshape(*patches_hwd.shape[:2], 3) * 255).astype(np.uint8)
         actual = f"per-image PCA (UMAP unavailable: {_umap_error})"
     else:
-        actual = "UMAP (pretrained, cross-species semantic)"
+        actual = ("UMAP — per-image normalized (max contrast)"
+                  if normalize_per_image else
+                  "UMAP — cross-species global colors")
     img = Image.fromarray(rgb).resize((resolution, resolution), Image.BILINEAR)
     buf = io.BytesIO()
     img.save(buf, format="PNG")
@@ -191,7 +236,7 @@ def stack_html(photo_url: str, overlay_url: Optional[str], opacity: float = 0.5)
 
 
 # ─── core render ───────────────────────────────────────────────────────────
-def render(url: str, opacity: float, resolution: int):
+def render(url: str, opacity: float, resolution: int, normalize: bool = False):
     if not url:
         return "", "", "", "", ""
     m = manifest()
@@ -217,10 +262,25 @@ def render(url: str, opacity: float, resolution: int):
              f"🍒 fruiting: **{fruiting:.3f}**")
     patches = np.frombuffer(srow["patches_fp16"], dtype=np.float16).reshape(
         tuple(srow["patches_shape"])).astype(np.float32)
-    ovl_url, actual_method = overlay_b64(patches, resolution)
+    ovl_url, actual_method = overlay_b64(patches, resolution, normalize_per_image=normalize)
     html = stack_html(url, ovl_url, opacity)
     status = f"_overlay: {actual_method} @ {resolution}px (opacity = client-side, instant)_"
+
+    # Kick off prefetch of next random observation's shard (warming cache)
+    _prefetch_next_random_async()
     return html, pheno, meta, status, url
+
+
+def _prefetch_next_random_async() -> None:
+    """Warm the shard cache for a random observation so the next click is fast."""
+    def _warm():
+        try:
+            m = manifest()
+            url = m.sample(1).iloc[0]["image_url_large"]
+            fetch_shard_row(url)  # populates _shard_cache
+        except Exception:
+            pass
+    threading.Thread(target=_warm, daemon=True).start()
 
 
 # ─── list builders / random / events ───────────────────────────────────────
@@ -241,22 +301,22 @@ def on_species_change(name: str):
         f"showing {len(samples)} of {total:,} observations for **{name}**"
 
 
-def random_any(opacity: float, resolution: int):
+def random_any(opacity: float, resolution: int, normalize: bool):
     m = manifest()
     row = m.sample(1).iloc[0]
     species = row["taxon_name"]
     df = list_obs_for_species(species)
     samples = df.values.tolist() if len(df) else []
-    html, pheno, meta, status, url = render(row["image_url_large"], opacity, resolution)
+    html, pheno, meta, status, url = render(row["image_url_large"], opacity, resolution, normalize)
     total = (m["taxon_name"] == species).sum()
     return (species, gr.Dataset(samples=samples),
             f"random pick: **{species}** — showing {len(samples)} of {total:,} observations",
             html, pheno, meta, status, url)
 
 
-def random_in_species(name: str, opacity: float, resolution: int):
+def random_in_species(name: str, opacity: float, resolution: int, normalize: bool):
     if not name:
-        return random_any(opacity, resolution)
+        return random_any(opacity, resolution, normalize)
     m = manifest()
     sub = m[m["taxon_name"] == name]
     if sub.empty:
@@ -264,40 +324,41 @@ def random_in_species(name: str, opacity: float, resolution: int):
     row = sub.sample(1).iloc[0]
     df = list_obs_for_species(name)
     samples = df.values.tolist() if len(df) else []
-    html, pheno, meta, status, url = render(row["image_url_large"], opacity, resolution)
+    html, pheno, meta, status, url = render(row["image_url_large"], opacity, resolution, normalize)
     return (name, gr.Dataset(samples=samples),
             f"random in **{name}** — showing {len(samples)} of {len(sub):,} observations",
             html, pheno, meta, status, url)
 
 
-def on_obs_select(sample, opacity: float, resolution: int):
+def on_obs_select(sample, opacity: float, resolution: int, normalize: bool):
     if not sample or len(sample) < 3:
         return "", "", "", "_(no row selected)_", ""
     url = sample[2]
     if not url:
         return "", "", "", "_(no URL in selected row)_", ""
-    return render(str(url), opacity, resolution)
+    return render(str(url), opacity, resolution, normalize)
 
 
-def recompute(url_holder: str, opacity: float, resolution: int):
+def recompute(url_holder: str, opacity: float, resolution: int, normalize: bool):
     if not url_holder:
         return "", "", "", "", ""
-    return render(url_holder, opacity, resolution)
+    return render(url_holder, opacity, resolution, normalize)
 
 
-def init_load(opacity: float, resolution: int):
-    """Page-load: populate species dropdown, default to Arctostaphylos pallida,
-    auto-render its first observation."""
+def init_load(opacity: float, resolution: int, normalize: bool):
+    """Page-load: populate species dropdown (instant, static list) + render
+    Arctostaphylos pallida's first observation (uses manifest, may take a
+    few seconds if the background warm hasn't finished)."""
     spp = species_list()
     sp = DEFAULT_SPECIES if DEFAULT_SPECIES in spp else (spp[0] if spp else "")
     df = list_obs_for_species(sp)
     samples = df.values.tolist() if len(df) else []
     if samples:
         url = samples[0][2]
-        html, pheno, meta, status, _ = render(url, opacity, resolution)
+        html, pheno, meta, status, _ = render(url, opacity, resolution, normalize)
     else:
         url = ""; html = pheno = meta = status = ""
-    total = (manifest()["taxon_name"] == sp).sum()
+    total = (manifest()["taxon_name"] == sp).sum() if _manifest is not None else 0
     return (gr.Dropdown(choices=spp, value=sp),
             gr.Dataset(samples=samples),
             f"showing {len(samples)} of {total:,} observations for **{sp}**",
@@ -361,40 +422,47 @@ with gr.Blocks(title="California Flourishing & Pollination",
                 opacity = gr.Slider(0.0, 1.0, value=0.5, step=0.01,
                                      label="Overlay opacity (instant)", scale=3)
                 resolution = gr.Slider(224, 1120, value=672, step=112,
-                                        label="Overlay resolution (px)", scale=3)
+                                        label="Overlay resolution (px)", scale=2)
+                normalize = gr.Checkbox(
+                    value=False,
+                    label="Normalize colors per-image (max contrast)",
+                    info="off = cross-species global; on = per-channel min/max from this image",
+                    scale=2,
+                )
             render_status = gr.Markdown()
             pheno_md = gr.Markdown()
             meta_md = gr.Markdown()
 
     # ─── wiring ────────────────────────────────────────────────────────────
-    demo.load(init_load, inputs=[opacity, resolution],
+    demo.load(init_load, inputs=[opacity, resolution, normalize],
               outputs=[species, obs_table, status, stacked, pheno_md, meta_md,
                        render_status, current_url])
 
     species.change(on_species_change, inputs=species, outputs=[obs_table, status])
 
     obs_table.click(
-        on_obs_select, inputs=[obs_table, opacity, resolution],
+        on_obs_select, inputs=[obs_table, opacity, resolution, normalize],
         outputs=[stacked, pheno_md, meta_md, render_status, current_url],
     )
 
     random_any_btn.click(
-        random_any, inputs=[opacity, resolution],
+        random_any, inputs=[opacity, resolution, normalize],
         outputs=[species, obs_table, status, stacked, pheno_md, meta_md,
                  render_status, current_url],
     )
 
     random_sp_btn.click(
-        random_in_species, inputs=[species, opacity, resolution],
+        random_in_species, inputs=[species, opacity, resolution, normalize],
         outputs=[species, obs_table, status, stacked, pheno_md, meta_md,
                  render_status, current_url],
     )
 
-    # Resolution → server recompute. Opacity → JS-only.
-    resolution.change(
-        recompute, inputs=[current_url, opacity, resolution],
-        outputs=[stacked, pheno_md, meta_md, render_status, current_url],
-    )
+    # Resolution or normalize → server recompute. Opacity → JS-only.
+    for ctrl in (resolution, normalize):
+        ctrl.change(
+            recompute, inputs=[current_url, opacity, resolution, normalize],
+            outputs=[stacked, pheno_md, meta_md, render_status, current_url],
+        )
     opacity.input(None, inputs=opacity, outputs=None, js=JS_OPACITY)
 
 

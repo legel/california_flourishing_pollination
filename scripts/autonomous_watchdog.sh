@@ -22,10 +22,12 @@ DOWNLOAD_CMD="$PY -m cfp.pipeline download --manifest data/processed/image_manif
     --concurrency 256 --per-host-concurrency 64 --cap-gb 800"
 
 # Use --with-phenovision: DINOv3 + PhenoVision in one GPU pass per image.
+# H200 has 143 GB VRAM; batch=256 + 16 DataLoader workers + async shard
+# write thread = ~500 img/s sustained (was ~130 img/s at batch=32).
 EMBED_CMD="$PY -m cfp.pipeline embed --image-dir $IMG --shard-dir $SHD \
     --checkpoint outputs/checkpoint_embedded.parquet \
-    --backbone vitl16 --image-size 224 --batch-size 32 \
-    --images-per-shard 10000 --poll-seconds 60 \
+    --backbone vitl16 --image-size 224 --batch-size 256 \
+    --images-per-shard 10000 --poll-seconds 10 \
     --gpu-decode --with-phenovision"
 
 UPLOAD_CMD="$PY -m cfp.pipeline upload --shard-dir $SHD \

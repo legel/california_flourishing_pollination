@@ -108,49 +108,71 @@ class DINOv3PhenoVisionExtractor:
 
     @torch.inference_mode()
     def embed_from_bytes(self, byte_buffers: List[bytes]) -> Tuple[CombinedOutput, list[int]]:
-        """Decode + DINOv3 + PhenoVision in one GPU session."""
+        """Decode + DINOv3 + PhenoVision in one GPU session.
+
+        Uses BATCH nvJPEG decode (single CUDA call for all JPEGs in the
+        batch) instead of a per-image Python loop — saturates the H200
+        nvJPEG engine and drops Python overhead from O(batch) to O(1).
+        """
         n = len(byte_buffers)
         if n == 0:
             raise ValueError("embed_from_bytes() received an empty batch")
 
+        # Build list of uint8 tensors for batch nvJPEG. Track originals so
+        # we can fall back per-image if batch decode fails.
+        bufs = [torch.frombuffer(bytearray(b), dtype=torch.uint8) for b in byte_buffers]
+
+        # Try batch decode on GPU first (much faster than per-image loop).
+        decoded: list[Optional[torch.Tensor]] = [None] * n
+        try:
+            batch_decoded = tvio.decode_jpeg(bufs, mode=tvio.ImageReadMode.RGB, device=self.device)
+            # decode_jpeg with a list returns a list of (3, H, W) tensors on GPU
+            if isinstance(batch_decoded, list):
+                for i, t in enumerate(batch_decoded):
+                    decoded[i] = t
+            else:
+                # Single-image fallback (unlikely with list input)
+                decoded[0] = batch_decoded
+        except Exception:
+            pass  # any of the inputs may be invalid; fall through to per-image
+
         per_image: list[torch.Tensor] = []
         failed: list[int] = []
         for idx, buf in enumerate(byte_buffers):
-            img = None
-            try:
-                bt = torch.frombuffer(bytearray(buf), dtype=torch.uint8)
-                img = tvio.decode_jpeg(bt, mode=tvio.ImageReadMode.RGB, device=self.device)
-            except Exception:
-                pass
+            img = decoded[idx]
             if img is None:
+                # Per-image fallback chain (PNG, JPEG via CPU, PIL last resort)
+                bt = bufs[idx]
                 try:
-                    bt = torch.frombuffer(bytearray(buf), dtype=torch.uint8)
-                    img = tvio.decode_image(bt, mode=tvio.ImageReadMode.RGB).to(self.device, non_blocking=True)
+                    img = tvio.decode_jpeg(bt, mode=tvio.ImageReadMode.RGB, device=self.device)
                 except Exception:
                     pass
-            if img is None:
-                try:
-                    from PIL import Image
-                    import io as _io
-                    pil = Image.open(_io.BytesIO(buf)).convert("RGB")
-                    img = torch.from_numpy(np.asarray(pil)).permute(2, 0, 1).contiguous()
-                    img = img.to(self.device, non_blocking=True)
-                except Exception:
-                    pass
-            if img is None:
-                failed.append(idx)
-                continue
+                if img is None:
+                    try:
+                        img = tvio.decode_image(bt, mode=tvio.ImageReadMode.RGB).to(self.device, non_blocking=True)
+                    except Exception:
+                        pass
+                if img is None:
+                    try:
+                        from PIL import Image
+                        import io as _io
+                        pil = Image.open(_io.BytesIO(buf)).convert("RGB")
+                        img = torch.from_numpy(np.asarray(pil)).permute(2, 0, 1).contiguous()
+                        img = img.to(self.device, non_blocking=True)
+                    except Exception:
+                        pass
+                if img is None:
+                    failed.append(idx)
+                    continue
 
-            # nvJPEG / decode_image variously return 3D (C, H, W) or 4D
-            # (N, C, H, W) depending on input. Normalize to 4D before resize.
-            if img.ndim == 2:                      # grayscale, no channel dim
+            # Normalize to (1, C, H, W). nvJPEG returns (C, H, W).
+            if img.ndim == 2:
                 img = img.unsqueeze(0).expand(3, -1, -1)
             if img.ndim == 3:
-                img = img.unsqueeze(0)             # (C, H, W)  → (1, C, H, W)
+                img = img.unsqueeze(0)
             elif img.ndim != 4:
-                failed.append(idx)
-                continue
-            # Drop alpha channel if present (RGBA → RGB)
+                failed.append(idx); continue
+            # RGBA/Grayscale → RGB
             if img.shape[1] == 4:
                 img = img[:, :3]
             elif img.shape[1] == 1:
