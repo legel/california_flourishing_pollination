@@ -253,7 +253,13 @@ def parse_(
             media = pd.DataFrame()
 
     console.print(f"occurrence rows: {len(occ):,}")
-    console.print(f"multimedia rows: {len(media):,}")
+    console.print(f"multimedia rows (pre-filter): {len(media):,}")
+    # Filter media to StillImage only — Sound rows leak audio that the
+    # downloader saves as .jpg and the embedder can't decode.
+    if not media.empty and "type" in media.columns:
+        before = len(media)
+        media = media[media["type"].astype(str).str.lower() == "stillimage"]
+        console.print(f"  StillImage filter: {before:,} -> {len(media):,}")
 
     # Build name → taxon_key lookup for our Calscape canonical names.
     keys_map = json.loads(keys_json.read_text())["name_to_taxon_key"]

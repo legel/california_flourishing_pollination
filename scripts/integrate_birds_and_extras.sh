@@ -54,7 +54,14 @@ def parse_dwca(path, role, kingdom, calscape_filter=False):
     with zipfile.ZipFile(path) as z:
         occ = pd.read_csv(z.open("occurrence.txt"), sep="\t", low_memory=False, on_bad_lines="skip")
         media = pd.read_csv(z.open("multimedia.txt"), sep="\t", low_memory=False, on_bad_lines="skip")
-    print(f"  {path}: {len(occ):,} occurrences, {len(media):,} media")
+    print(f"  {path}: {len(occ):,} occurrences, {len(media):,} media (pre-filter)")
+    # Filter media to StillImage only — bird-pollinator batches include
+    # `type=Sound` rows (.wav/.mp3 bird recordings) that, if downloaded,
+    # masquerade as .jpg and crash the embedder forever.
+    if "type" in media.columns:
+        before = len(media)
+        media = media[media["type"].astype(str).str.lower() == "stillimage"]
+        print(f"    StillImage filter: {before:,} -> {len(media):,}")
     if calscape_filter:
         before = len(occ)
         occ = occ[occ["scientificName"].isin(calscape)]

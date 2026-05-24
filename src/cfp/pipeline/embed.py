@@ -279,6 +279,15 @@ def embed(
                     prov.write(json.dumps({"type": "bad_image",
                                            "gbif_occurrence_id": meta["gbif_occurrence_id"],
                                            "path": str(batch_paths[i])}) + "\n")
+                    # Also DELETE bad files from disk so they don't keep
+                    # getting re-scanned every round (otherwise audio files
+                    # mis-saved as .jpg clog the queue forever).
+                    if delete_after:
+                        try:
+                            batch_paths[i].unlink(missing_ok=True)
+                            batch_paths[i].with_suffix(".json").unlink(missing_ok=True)
+                        except OSError:
+                            pass
                 surviving_meta = [m for i, m in enumerate(batch_meta) if i not in bad]
                 surviving_paths = [p for i, p in enumerate(batch_paths) if i not in bad]
             else:
