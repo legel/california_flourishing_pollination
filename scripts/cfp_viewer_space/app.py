@@ -3,18 +3,16 @@
 A Gradio Space that browses the deepearth/california-flourishing-pollination
 HF dataset record-by-record:
   - photo from iNaturalist (browser-direct URL, fast)
-  - DINOv3 14×14×1024 patches → 3D RGB overlay
-      * PCA (per-observation SVD)
-      * UMAP (pretrained 1024→3 encoder for cross-species semantic coloring)
-  - Photo + overlay stacked via CSS so the **opacity slider is JS-driven**
-    (no server roundtrip; instant)
+  - DINOv3 14×14×1024 patches → 3D RGB overlay via a pretrained UMAP
+    encoder (cross-species semantic — same flower-vs-leaf region → same color
+    across observations). The encoder is loaded from a small numpy archive
+    (no joblib class graph) and approximated via sklearn NearestNeighbors
+    so it works under any Python version.
+  - Photo + overlay stacked via CSS; opacity slider is JS-driven (instant)
+  - PhenoVision flowering / fruiting probabilities (label-swap aware for
+    shards uploaded before the embedder restart on 2026-05-24T07:09)
   - Per-photo CC license + creator attribution + full metadata
-  - PhenoVision flowering / fruiting probabilities (with old-shard label-swap
-    correction — see PHENOVISION_FIX_TIMESTAMP below)
-
-Storage strategy: ships only the ~225 MB master manifest + 110 MB shard
-index + ~1.5 GB UMAP encoder. Embedding shards (3 GB each, 1,072 total)
-are pulled on demand from the parent dataset and cached on the Space disk.
+  - Default species on page load: Arctostaphylos pallida (Manzanita)
 """
 from __future__ import annotations
 import base64
@@ -32,14 +30,13 @@ from huggingface_hub import hf_hub_download
 REPO = "deepearth/california-flourishing-pollination"
 MANIFEST_FILE = "manifests/image_manifest.parquet"
 SHARD_INDEX_FILE = "lookups/shard_index.parquet"
-UMAP_FILE = "lookups/umap_encoder.joblib"
-GLOBAL_PCA_FILE = "lookups/global_pca.npz"
+UMAP_NUMPY_FILE = "lookups/umap_numpy.npz"
 MAX_OBS = 200
+DEFAULT_SPECIES = "Arctostaphylos pallida"
 
-# Shards with run_id >= this UTC stamp have the correct PhenoVision column
-# order. Older shards have flowering / fruiting columns swapped (a bug in
-# the original combined-extractor; vendor/phenovision/inference.py confirms
-# class_names = ['fruiting', 'flowering']).
+# Shards with run_id >= this UTC stamp have correct PhenoVision column order.
+# Older shards have flowering/fruiting columns swapped (vendor/phenovision/
+# inference.py: class_names=['fruiting', 'flowering'] — index 0 is fruiting).
 PHENOVISION_FIX_TIMESTAMP = "20260524T070916"
 
 
@@ -48,6 +45,7 @@ _manifest: Optional[pd.DataFrame] = None
 _shard_idx: Optional[pd.DataFrame] = None
 _species: Optional[list[str]] = None
 _umap_pack: Optional[dict] = None
+_umap_error: Optional[str] = None
 
 
 def manifest() -> pd.DataFrame:
@@ -79,55 +77,39 @@ def species_list() -> list[str]:
     return _species
 
 
-_umap_error: Optional[str] = None
-
-
 def umap_pack() -> Optional[dict]:
-    """Lazy-load the pretrained UMAP(1024->3) encoder + global channel ranges.
+    """Build approximate-UMAP encoder from the extracted numpy arrays.
 
-    On failure (missing dep, corrupt download, ...) the error is captured in
-    _umap_error so the UI can surface "UMAP requested but failed: <reason>"
-    instead of silently falling back to PCA."""
+    `lookups/umap_numpy.npz` ships the UMAP training data (100K patches,
+    fp16) + their 3-D embeddings + per-channel min/max. We fit a fast
+    NearestNeighbors index on the training data and approximate transform
+    via a distance-weighted average of neighbor embeddings — visually
+    identical to UMAP's transform for this use, and works under any
+    Python version (no class deserialization)."""
     global _umap_pack, _umap_error
     if _umap_pack is None:
         try:
-            import joblib
-            import umap  # noqa: F401  — needed for the deserialized UMAP object
-            p = hf_hub_download(REPO, UMAP_FILE, repo_type="dataset")
-            _umap_pack = joblib.load(p)
+            p = hf_hub_download(REPO, UMAP_NUMPY_FILE, repo_type="dataset")
+            z = np.load(p)
+            from sklearn.neighbors import NearestNeighbors
+            n_neighbors = int(z["n_neighbors"])
+            metric = str(z["metric"])
+            nn = NearestNeighbors(n_neighbors=n_neighbors, metric=metric, n_jobs=-1)
+            nn.fit(z["training_data"].astype(np.float32))
+            _umap_pack = {
+                "nn": nn,
+                "training_embeddings": z["training_embeddings"].astype(np.float32),
+                "channel_min": z["channel_min"].astype(np.float32),
+                "channel_max": z["channel_max"].astype(np.float32),
+            }
             _umap_error = None
+            print(f"[umap] loaded; {z['training_data'].shape[0]:,} train points, "
+                  f"k={n_neighbors}, metric={metric}", flush=True)
         except Exception as e:
             _umap_pack = {}
             _umap_error = f"{type(e).__name__}: {e}"
-            print(f"[umap] load failed — falling back to PCA: {_umap_error}", flush=True)
+            print(f"[umap] load failed: {_umap_error}", flush=True)
     return _umap_pack if _umap_pack else None
-
-
-def umap_error() -> Optional[str]:
-    """Surface the last UMAP load error (None if not yet attempted or success)."""
-    return _umap_error
-
-
-_global_pca: Optional[dict] = None
-
-
-def global_pca_pack() -> Optional[dict]:
-    """Lazy-load the global PCA arrays (12 KB, no class deserialization)."""
-    global _global_pca
-    if _global_pca is None:
-        try:
-            p = hf_hub_download(REPO, GLOBAL_PCA_FILE, repo_type="dataset")
-            z = np.load(p)
-            _global_pca = {
-                "components": z["components"].astype(np.float32),   # (1024, 3)
-                "mean": z["mean"].astype(np.float32),                # (1024,)
-                "channel_min": z["channel_min"].astype(np.float32),  # (3,)
-                "channel_max": z["channel_max"].astype(np.float32),
-            }
-        except Exception as e:
-            print(f"[global_pca] load failed: {e}", flush=True)
-            _global_pca = {}
-    return _global_pca if _global_pca else None
 
 
 # ─── shard row lookup ──────────────────────────────────────────────────────
@@ -135,7 +117,6 @@ _shard_cache: dict[str, pd.DataFrame] = {}
 
 
 def fetch_shard_row(url: str) -> Tuple[Optional[pd.Series], Optional[str]]:
-    """Return (row, shard_path). shard_path tells us which PhenoVision label era."""
     idx = shard_idx()
     if url not in idx.index:
         return None, None
@@ -154,105 +135,63 @@ def fetch_shard_row(url: str) -> Tuple[Optional[pd.Series], Optional[str]]:
 
 
 def pheno_corrected(srow: pd.Series, shard_path: str) -> Tuple[float, float]:
-    """Return (flowering, fruiting) with old-shard column-swap correction."""
     m = re.search(r"embeddings_(\d{8}T\d{6})_", shard_path or "")
     if m and m.group(1) >= PHENOVISION_FIX_TIMESTAMP:
-        # New shards: column names are correct.
         return float(srow["phenovision_flowering_prob"]), float(srow["phenovision_fruiting_prob"])
-    # Old shards have columns swapped: the value stored as "_flowering_prob"
-    # is actually fruiting probability and vice versa.
     return float(srow["phenovision_fruiting_prob"]), float(srow["phenovision_flowering_prob"])
 
 
-# ─── projections ───────────────────────────────────────────────────────────
-def pca_rgb(patches_hwd: np.ndarray) -> np.ndarray:
-    """Per-observation PCA (sign-flips between observations — not cross-image
-    consistent). Kept for inspection; default is global PCA."""
-    h, w, d = patches_hwd.shape
-    flat = patches_hwd.reshape(-1, d).astype(np.float32)
-    flat -= flat.mean(0)
-    cov = flat.T @ flat / max(1, flat.shape[0] - 1)
-    eigvals, eigvecs = np.linalg.eigh(cov)
-    top3 = eigvecs[:, -3:][:, ::-1]
-    proj = flat @ top3
-    rng = proj.max(0) - proj.min(0)
-    proj = (proj - proj.min(0)) / (rng + 1e-8)
-    return (proj.reshape(h, w, 3) * 255).astype(np.uint8)
-
-
-def global_pca_rgb(patches_hwd: np.ndarray) -> Optional[np.ndarray]:
-    """Cross-image consistent PCA — projection matrix fitted on 500K random
-    patches; per-channel min/max from training are used for normalization,
-    so the same patch concept gets the same color across all observations."""
-    pack = global_pca_pack()
-    if pack is None:
-        return None
-    h, w, d = patches_hwd.shape
-    flat = patches_hwd.reshape(-1, d).astype(np.float32)
-    proj = (flat - pack["mean"]) @ pack["components"]
-    proj = np.clip((proj - pack["channel_min"]) /
-                   (pack["channel_max"] - pack["channel_min"] + 1e-8), 0, 1)
-    return (proj.reshape(h, w, 3) * 255).astype(np.uint8)
-
-
+# ─── UMAP projection ───────────────────────────────────────────────────────
 def umap_rgb(patches_hwd: np.ndarray) -> Optional[np.ndarray]:
     pack = umap_pack()
     if pack is None:
         return None
     h, w, d = patches_hwd.shape
     flat = patches_hwd.reshape(-1, d).astype(np.float32)
-    proj = pack["encoder"].transform(flat)
-    cmin = np.asarray(pack["channel_min"], dtype=np.float32)
-    cmax = np.asarray(pack["channel_max"], dtype=np.float32)
-    proj = np.clip((proj - cmin) / (cmax - cmin + 1e-8), 0, 1)
+    dists, idxs = pack["nn"].kneighbors(flat)
+    weights = 1.0 / (dists + 1e-6)
+    weights = weights / weights.sum(axis=1, keepdims=True)
+    selected = pack["training_embeddings"][idxs]   # (N, K, 3)
+    proj = (weights[..., None] * selected).sum(axis=1)  # (N, 3)
+    proj = np.clip((proj - pack["channel_min"]) /
+                    (pack["channel_max"] - pack["channel_min"] + 1e-8), 0, 1)
     return (proj.reshape(h, w, 3) * 255).astype(np.uint8)
 
 
-def overlay_b64(patches_hwd: np.ndarray, method: str, resolution: int) -> Tuple[str, str]:
-    """Return (data-URL of upscaled overlay PNG, method label actually used).
-
-    Method options:
-      'UMAP'         — pretrained UMAP(1024->3) cross-image semantic; falls
-                       back to global PCA if joblib deserialization fails
-      'Global PCA'   — top-3 PCA components fitted on 500K patches; cross-
-                       image consistent; tiny (12 KB), always loads
-      'Per-image PCA' — per-observation SVD; sign-flips per image
-    """
-    rgb = None
-    actual = method
-    if method == "UMAP":
-        rgb = umap_rgb(patches_hwd)
-        if rgb is None:
-            rgb = global_pca_rgb(patches_hwd)
-            actual = f"Global PCA (UMAP fallback — {umap_error() or 'encoder unavailable'})"
-    elif method == "Global PCA":
-        rgb = global_pca_rgb(patches_hwd)
-        if rgb is None:
-            actual = "Per-image PCA (Global PCA fallback)"
+def overlay_b64(patches_hwd: np.ndarray, resolution: int) -> Tuple[str, str]:
+    rgb = umap_rgb(patches_hwd)
     if rgb is None:
-        rgb = pca_rgb(patches_hwd)
+        # Last-resort fallback: per-image PCA (sign-flips per image, but
+        # at least something shows)
+        flat = patches_hwd.reshape(-1, patches_hwd.shape[-1]).astype(np.float32)
+        flat -= flat.mean(0)
+        cov = flat.T @ flat / max(1, flat.shape[0] - 1)
+        _, evec = np.linalg.eigh(cov)
+        proj = flat @ evec[:, -3:][:, ::-1]
+        proj = (proj - proj.min(0)) / (proj.max(0) - proj.min(0) + 1e-8)
+        rgb = (proj.reshape(*patches_hwd.shape[:2], 3) * 255).astype(np.uint8)
+        actual = f"per-image PCA (UMAP unavailable: {_umap_error})"
+    else:
+        actual = "UMAP (pretrained, cross-species semantic)"
     img = Image.fromarray(rgb).resize((resolution, resolution), Image.BILINEAR)
     buf = io.BytesIO()
     img.save(buf, format="PNG")
     return ("data:image/png;base64," + base64.b64encode(buf.getvalue()).decode(), actual)
 
 
-# ─── HTML composition ──────────────────────────────────────────────────────
+# ─── HTML stack ────────────────────────────────────────────────────────────
 def stack_html(photo_url: str, overlay_url: Optional[str], opacity: float = 0.5) -> str:
-    """Photo + overlay stacked via absolute positioning. The overlay's CSS
-    opacity is mutated client-side by the slider's js callback."""
     base = (f'<div class="cfp-stack">'
             f'<img src="{photo_url}" class="cfp-photo" alt="iNaturalist photo">')
     if overlay_url:
         base += (f'<img src="{overlay_url}" id="cfp-overlay" class="cfp-overlay" '
-                 f'style="opacity:{opacity:.2f}" alt="DINOv3 overlay">')
+                 f'style="opacity:{opacity:.2f}" alt="DINOv3 UMAP overlay">')
     base += "</div>"
     return base
 
 
 # ─── core render ───────────────────────────────────────────────────────────
-def render(url: str, method: str, opacity: float, resolution: int):
-    """Return (html, pheno_md, meta_md, status_md, url_state)."""
+def render(url: str, opacity: float, resolution: int):
     if not url:
         return "", "", "", "", ""
     m = manifest()
@@ -260,7 +199,6 @@ def render(url: str, method: str, opacity: float, resolution: int):
     if row.empty:
         return stack_html(url, None, opacity), "", "", "URL not found in manifest", ""
     row = row.iloc[0]
-
     meta = (f"### {row['taxon_name']}\n"
             f"*{row['taxon_name_verbatim']}*  \n"
             f"role: **{row['dataset_role']}** · family: {row['family']}  \n"
@@ -269,22 +207,19 @@ def render(url: str, method: str, opacity: float, resolution: int):
             f"📍 {row['decimal_latitude']:.4f}, {row['decimal_longitude']:.4f}  \n"
             f"📷 {row['creator']} — `{row['license']}`  \n"
             f"[iNaturalist photo source]({url})")
-
     srow, shard_path = fetch_shard_row(url)
     if srow is None:
         return stack_html(url, None, opacity), "", meta, \
-               "_(no embedding shard found for this URL)_", url
-
+               "_(no embedding shard found for this URL — try a different observation)_", url
     flowering, fruiting = pheno_corrected(srow, shard_path)
     pheno = (f"### PhenoVision\n"
              f"🌸 flowering: **{flowering:.3f}**  \n"
              f"🍒 fruiting: **{fruiting:.3f}**")
-
     patches = np.frombuffer(srow["patches_fp16"], dtype=np.float16).reshape(
         tuple(srow["patches_shape"])).astype(np.float32)
-    ovl_url, actual_method = overlay_b64(patches, method, resolution)
+    ovl_url, actual_method = overlay_b64(patches, resolution)
     html = stack_html(url, ovl_url, opacity)
-    status = f"_overlay: {actual_method} @ {resolution}px (opacity changes are client-side and instant)_"
+    status = f"_overlay: {actual_method} @ {resolution}px (opacity = client-side, instant)_"
     return html, pheno, meta, status, url
 
 
@@ -306,22 +241,22 @@ def on_species_change(name: str):
         f"showing {len(samples)} of {total:,} observations for **{name}**"
 
 
-def random_any(method: str, opacity: float, resolution: int):
+def random_any(opacity: float, resolution: int):
     m = manifest()
     row = m.sample(1).iloc[0]
     species = row["taxon_name"]
     df = list_obs_for_species(species)
     samples = df.values.tolist() if len(df) else []
-    html, pheno, meta, status, url = render(row["image_url_large"], method, opacity, resolution)
+    html, pheno, meta, status, url = render(row["image_url_large"], opacity, resolution)
     total = (m["taxon_name"] == species).sum()
     return (species, gr.Dataset(samples=samples),
             f"random pick: **{species}** — showing {len(samples)} of {total:,} observations",
             html, pheno, meta, status, url)
 
 
-def random_in_species(name: str, method: str, opacity: float, resolution: int):
+def random_in_species(name: str, opacity: float, resolution: int):
     if not name:
-        return random_any(method, opacity, resolution)
+        return random_any(opacity, resolution)
     m = manifest()
     sub = m[m["taxon_name"] == name]
     if sub.empty:
@@ -329,27 +264,44 @@ def random_in_species(name: str, method: str, opacity: float, resolution: int):
     row = sub.sample(1).iloc[0]
     df = list_obs_for_species(name)
     samples = df.values.tolist() if len(df) else []
-    html, pheno, meta, status, url = render(row["image_url_large"], method, opacity, resolution)
+    html, pheno, meta, status, url = render(row["image_url_large"], opacity, resolution)
     return (name, gr.Dataset(samples=samples),
             f"random in **{name}** — showing {len(samples)} of {len(sub):,} observations",
             html, pheno, meta, status, url)
 
 
-def on_obs_select(sample, method: str, opacity: float, resolution: int):
-    """gr.Dataset.click passes the clicked sample (list) as the first arg."""
+def on_obs_select(sample, opacity: float, resolution: int):
     if not sample or len(sample) < 3:
         return "", "", "", "_(no row selected)_", ""
     url = sample[2]
     if not url:
         return "", "", "", "_(no URL in selected row)_", ""
-    return render(str(url), method, opacity, resolution)
+    return render(str(url), opacity, resolution)
 
 
-def recompute(url_holder: str, method: str, opacity: float, resolution: int):
-    """Re-render only when method or resolution changes (opacity is JS-driven)."""
+def recompute(url_holder: str, opacity: float, resolution: int):
     if not url_holder:
         return "", "", "", "", ""
-    return render(url_holder, method, opacity, resolution)
+    return render(url_holder, opacity, resolution)
+
+
+def init_load(opacity: float, resolution: int):
+    """Page-load: populate species dropdown, default to Arctostaphylos pallida,
+    auto-render its first observation."""
+    spp = species_list()
+    sp = DEFAULT_SPECIES if DEFAULT_SPECIES in spp else (spp[0] if spp else "")
+    df = list_obs_for_species(sp)
+    samples = df.values.tolist() if len(df) else []
+    if samples:
+        url = samples[0][2]
+        html, pheno, meta, status, _ = render(url, opacity, resolution)
+    else:
+        url = ""; html = pheno = meta = status = ""
+    total = (manifest()["taxon_name"] == sp).sum()
+    return (gr.Dropdown(choices=spp, value=sp),
+            gr.Dataset(samples=samples),
+            f"showing {len(samples)} of {total:,} observations for **{sp}**",
+            html, pheno, meta, status, url)
 
 
 # ─── UI ────────────────────────────────────────────────────────────────────
@@ -357,41 +309,12 @@ CUSTOM_CSS = """
 @import url('https://fonts.googleapis.com/css2?family=Oxygen:wght@300;400;700&display=swap');
 *, *::before, *::after { font-family: 'Oxygen', 'Helvetica Neue', sans-serif !important; }
 code, pre, kbd, samp { font-family: 'Oxygen Mono', 'JetBrains Mono', 'Menlo', monospace !important; }
-.cfp-stack {
-    position: relative;
-    display: inline-block;
-    max-width: 100%;
-    border-radius: 8px;
-    overflow: hidden;
-    background: #111;
-}
-.cfp-photo {
-    display: block;
-    max-width: 100%;
-    width: auto;
-    height: auto;
-    border-radius: 8px;
-}
-.cfp-overlay {
-    position: absolute;
-    top: 0;
-    left: 0;
-    width: 100%;
-    height: 100%;
-    pointer-events: none;
-    border-radius: 8px;
-    mix-blend-mode: normal;
-    image-rendering: auto;
-    transition: opacity 0.05s linear;
-}
+.cfp-stack { position: relative; display: inline-block; max-width: 100%; border-radius: 8px; overflow: hidden; background: #111; }
+.cfp-photo { display: block; max-width: 100%; width: auto; height: auto; border-radius: 8px; }
+.cfp-overlay { position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; border-radius: 8px; transition: opacity 0.05s linear; }
 """
-
 JS_OPACITY = """
-(v) => {
-  const el = document.getElementById('cfp-overlay');
-  if (el) el.style.opacity = v;
-  return v;
-}
+(v) => { const e = document.getElementById('cfp-overlay'); if (e) e.style.opacity = v; return v; }
 """
 
 with gr.Blocks(title="California Flourishing & Pollination",
@@ -403,8 +326,9 @@ with gr.Blocks(title="California Flourishing & Pollination",
         "California-native plants + flying pollinators, encoded with "
         "**DINOv3 ViT-L/16** spatial features + **PhenoVision** "
         "flowering/fruiting probabilities. The 14×14×1024 patch grid is "
-        "projected to 3D RGB and overlaid on the photo. "
-        "*Opacity is client-side instant; method + resolution recompute the overlay.*"
+        "projected to 3D RGB via a **pretrained UMAP** (cross-species "
+        "semantic — same flower-vs-leaf region → same color across "
+        "observations). Opacity slider is JS-driven instant."
     )
 
     current_url = gr.State("")
@@ -420,9 +344,6 @@ with gr.Blocks(title="California Flourishing & Pollination",
     with gr.Row():
         with gr.Column(scale=2):
             status = gr.Markdown()
-            # gr.Dataset is purpose-built for clickable rows (vs gr.Dataframe
-            # which either blocks .select with interactive=False or makes the
-            # cells text-editable with interactive=True).
             obs_table = gr.Dataset(
                 components=[gr.Textbox(visible=False),
                             gr.Textbox(visible=False),
@@ -435,12 +356,8 @@ with gr.Blocks(title="California Flourishing & Pollination",
             )
 
         with gr.Column(scale=3):
-            stacked = gr.HTML(label="iNat photo + DINOv3 patch-grid overlay")
+            stacked = gr.HTML(label="iNat photo + DINOv3 UMAP overlay")
             with gr.Row():
-                method = gr.Radio(
-                    ["Global PCA", "UMAP", "Per-image PCA"], value="Global PCA",
-                    label="Projection (1024 → 3)", scale=2,
-                )
                 opacity = gr.Slider(0.0, 1.0, value=0.5, step=0.01,
                                      label="Overlay opacity (instant)", scale=3)
                 resolution = gr.Slider(224, 1120, value=672, step=112,
@@ -450,36 +367,34 @@ with gr.Blocks(title="California Flourishing & Pollination",
             meta_md = gr.Markdown()
 
     # ─── wiring ────────────────────────────────────────────────────────────
-    demo.load(lambda: gr.Dropdown(choices=species_list()), outputs=species)
+    demo.load(init_load, inputs=[opacity, resolution],
+              outputs=[species, obs_table, status, stacked, pheno_md, meta_md,
+                       render_status, current_url])
 
     species.change(on_species_change, inputs=species, outputs=[obs_table, status])
 
     obs_table.click(
-        on_obs_select,
-        inputs=[obs_table, method, opacity, resolution],
+        on_obs_select, inputs=[obs_table, opacity, resolution],
         outputs=[stacked, pheno_md, meta_md, render_status, current_url],
     )
 
     random_any_btn.click(
-        random_any, inputs=[method, opacity, resolution],
+        random_any, inputs=[opacity, resolution],
         outputs=[species, obs_table, status, stacked, pheno_md, meta_md,
                  render_status, current_url],
     )
 
     random_sp_btn.click(
-        random_in_species, inputs=[species, method, opacity, resolution],
+        random_in_species, inputs=[species, opacity, resolution],
         outputs=[species, obs_table, status, stacked, pheno_md, meta_md,
                  render_status, current_url],
     )
 
-    # Method + resolution → server recompute (need to rebuild overlay PNG)
-    for ctrl in (method, resolution):
-        ctrl.change(
-            recompute, inputs=[current_url, method, opacity, resolution],
-            outputs=[stacked, pheno_md, meta_md, render_status, current_url],
-        )
-
-    # Opacity → JS-only CSS update (no server roundtrip, no recompute)
+    # Resolution → server recompute. Opacity → JS-only.
+    resolution.change(
+        recompute, inputs=[current_url, opacity, resolution],
+        outputs=[stacked, pheno_md, meta_md, render_status, current_url],
+    )
     opacity.input(None, inputs=opacity, outputs=None, js=JS_OPACITY)
 
 
