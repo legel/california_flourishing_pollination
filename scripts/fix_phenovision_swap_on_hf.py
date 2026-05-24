@@ -19,6 +19,7 @@ import re
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
+from typing import Optional
 
 import pandas as pd
 from huggingface_hub import HfApi, hf_hub_download
@@ -44,6 +45,7 @@ def needs_fix(shard_path: str) -> bool:
 
 def fix_one(shard_path: str, api: HfApi) -> str:
     t0 = time.time()
+    local = None
     try:
         local = hf_hub_download(REPO, shard_path, repo_type="dataset")
         df = pd.read_parquet(local)
@@ -51,6 +53,7 @@ def fix_one(shard_path: str, api: HfApi) -> str:
         return f"FAIL download {shard_path}: {type(e).__name__}: {e}"
 
     if "phenovision_flowering_prob" not in df.columns:
+        _purge_cache(local)
         return f"SKIP {shard_path}: no phenovision columns"
 
     # Swap the values
@@ -60,6 +63,7 @@ def fix_one(shard_path: str, api: HfApi) -> str:
 
     out = TMP / Path(shard_path).name
     df.to_parquet(out, index=False)
+    del df  # free memory before upload
 
     try:
         api.upload_file(
@@ -73,8 +77,29 @@ def fix_one(shard_path: str, api: HfApi) -> str:
     finally:
         try: out.unlink()
         except OSError: pass
+        _purge_cache(local)
 
-    return f"OK {shard_path} in {time.time()-t0:.0f}s ({len(df):,} rows)"
+    return f"OK {shard_path} in {time.time()-t0:.0f}s"
+
+
+def _purge_cache(local_path: Optional[str]) -> None:
+    """Delete the downloaded blob + symlink from HF cache so the next shard
+    doesn't accumulate disk. Each shard is ~3 GB; without this, 1,200 shards
+    × 3 GB = 3.6 TB cache."""
+    if not local_path:
+        return
+    try:
+        p = Path(local_path)
+        # local_path is a symlink: snapshots/<commit>/embeddings/embeddings_xxx.parquet
+        # → blobs/<hash>
+        if p.is_symlink():
+            target = p.resolve()
+            p.unlink(missing_ok=True)
+            target.unlink(missing_ok=True)
+        else:
+            p.unlink(missing_ok=True)
+    except OSError:
+        pass
 
 
 def main() -> None:
