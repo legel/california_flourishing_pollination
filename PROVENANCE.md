@@ -54,10 +54,21 @@ This document records — for every input dataset, every query, every model chec
 
 ### 1c. GBIF occurrence backbone (citable observations)
 - **URL:** https://api.gbif.org/v1/occurrence/search
-- **Filter:** `country=US`, `stateProvince=California`, `kingdom=Plantae`, taxon ∈ Calflora-native set.
+- **Filter:** `country=US`, `stateProvince=California`, `kingdom=Plantae`, taxon ∈ Calscape-canonical set.
 - **Bulk download:** `https://api.gbif.org/v1/occurrence/download/request` → DOI per download.
-- **License:** per-record `license` field (CC0 / CC-BY / CC-BY-NC).
-- **Citation:** generated DOI per download (recorded in `provenance/gbif_downloads.jsonl`).
+- **License:** per-record `license` field (CC0 / CC-BY / CC-BY-NC); per-photo `license`/`rightsHolder` in `multimedia.txt` (preferred — that is the creator-set photo license).
+- **Citable downloads used in the master manifest** (all on iNat Research-grade × CA × StillImage):
+
+  | # | Predicate | Records | GBIF key | DOI | Snapshot (UTC) |
+  |---|---|---|---|---|---|
+  | 1 | `TAXON_KEY IN [Calscape canonical plant keys]` | 3,607,437 | `0007278-260519110011954` | [`10.15468/dl.pbgs4h`](https://doi.org/10.15468/dl.pbgs4h) | 2026-05-22 |
+  | 2 | `TAXON_KEY IN [216 Insecta, 5289 Trochilidae, 734 Chiroptera]` (broad pollinator scope; supersedes earlier narrow batch `10.15468/dl.yr3ud7`) | 1,497,966 | `0007705-260519110011954` | [`10.15468/dl.cvbfp4`](https://doi.org/10.15468/dl.cvbfp4) | 2026-05-22 |
+  | 3 | `TAXON_KEY IN [5289 Trochilidae, 9201093 Ptiliogonatidae, 9321 Mimidae, 6176 Icteridae, 5263 Parulidae, 9285 Cardinalidae, 5215 Bombycillidae]` (added 2026-05-23 to broaden flower-visiting bird coverage) | 326,544 | `0009596-260519110011954` | [`10.15468/dl.gphfhs`](https://doi.org/10.15468/dl.gphfhs) | 2026-05-23 |
+  | 4 | `TAXON_KEY IN [49 keys recovering 487 Calscape names unmatched on first pass — 29 cultivar-parent genera, 32 variety species heads, 62 HIGHERRANK matches]` (added 2026-05-23) | 4,611,190 | `0009598-260519110011954` | [`10.15468/dl.nbe8dt`](https://doi.org/10.15468/dl.nbe8dt) | 2026-05-23 |
+
+  All four DwC-A zips are archived at `data/raw/gbif/` with `.meta.json` sidecars carrying the download key + DOI + record count. Each `gbif_occurrence_id` in the master manifest is traceable back to one of these DOIs.
+- **Citation (composite — cite all four downloads + the iNat dataset):**
+  *iNaturalist contributors / California Native Plant Society Calscape (2026). iNaturalist Research-grade observations (GBIF dataset key `50c9509d-22c7-4a22-a47d-8c48425ef4a7`), California-scoped subsets via GBIF Occurrence Download:* https://doi.org/10.15468/dl.pbgs4h, https://doi.org/10.15468/dl.cvbfp4, https://doi.org/10.15468/dl.gphfhs, https://doi.org/10.15468/dl.nbe8dt.
 
 ### 1d. Jepson eFlora (taxonomic authority, **cite only**)
 - **URL:** https://ucjeps.berkeley.edu/eflora/
@@ -143,12 +154,14 @@ Lookup table source: `data/processed/flight_ability_rules.csv` (versioned in thi
 
 ## 5. DINOv3
 
-- **Model:** Meta AI DINOv3
-- **Validation backbone:** ViT-B/16 (10-image sanity check)
-- **Production backbone:** ViT-L/16
-- **Checkpoint source:** _Hugging Face — repo TBD; may be gated_
-- **License:** DINOv3 model license (review at fetch time)
-- **Citation:** Oquab, M., et al. (2023). *DINOv2: Learning Robust Visual Features without Supervision.* arXiv:2304.07193. (Update to the DINOv3 publication when finalized.)
+- **Model:** Meta AI DINOv3 (self-supervised vision transformer, LVD-1689M pretrain).
+- **Validation backbone:** `facebook/dinov3-vitb16-pretrain-lvd1689m` (10-image sanity check at 448², 28×28 patches × 768 dim).
+- **Production backbone:** `facebook/dinov3-vitl16-pretrain-lvd1689m` (224², 14×14 patches × 1024 dim, 300M params).
+- **Checkpoint source:** Hugging Face — gated; access granted to user `ecodash` on 2026-05-22.
+- **Precision:** **bf16** (fp16 → NaN in attention end-to-end; bf16 is numerically equivalent to fp32 at fp16 throughput). See `ASSUMPTIONS.md` §E.
+- **Token layout per image:** `[CLS] [4 register] [14×14 patch tokens]`. The 4 register tokens are discarded in our extractor; we persist CLS (1024,) and patches (14, 14, 1024).
+- **License:** DINOv3 License Agreement (Meta AI; commercial use permitted under Meta's terms; we redistribute only the *transformative-derivative* embeddings, not weights).
+- **Citation:** Siméoni, O., et al. (2025). *DINOv3.* arXiv:2508.10104. https://doi.org/10.48550/arXiv.2508.10104
 
 ---
 

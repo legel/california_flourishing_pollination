@@ -261,32 +261,57 @@ def parse_(
     rev = {v: k for k, v in keys_map.items() if v}
 
     # Each row of multimedia is one photo. Inner-join to occurrences for metadata.
+    # IMPORTANT: both DwC-A tables expose `license` and `rightsHolder`. Rename the
+    # occurrence-side columns BEFORE merge so pandas doesn't silently suffix them
+    # to `license_x`/`license_y` (which is how the per-photo license + creator name
+    # got lost across 10M manifest rows in earlier runs).
     if not media.empty:
-        m = media.merge(
-            occ[["gbifID", "scientificName", "taxonKey", "decimalLatitude", "decimalLongitude",
-                 "eventDate", "license", "rightsHolder", "recordedBy", "occurrenceID",
-                 "family", "genus", "verbatimLocality"]],
-            on="gbifID", how="inner"
-        )
+        occ_renamed = occ[["gbifID", "scientificName", "taxonKey", "taxonRank",
+                           "species", "genus", "specificEpithet", "infraspecificEpithet",
+                           "cultivarEpithet", "decimalLatitude", "decimalLongitude",
+                           "eventDate", "license", "rightsHolder", "recordedBy",
+                           "occurrenceID", "family", "verbatimLocality"]].rename(columns={
+            "license": "license_occ", "rightsHolder": "rightsHolder_occ",
+        })
+        m = media.merge(occ_renamed, on="gbifID", how="inner")
     else:
         m = pd.DataFrame()
 
     rows = []
     snapshot = datetime.now(timezone.utc).isoformat()
+    import re as _re
+    _URL_RX = _re.compile(r"/(small|medium|large|original|square)\.(jpe?g|png|gif|webp)", _re.I)
     for _, r in m.iterrows():
         url = r.get("identifier") or r.get("references")
         if not url or "inaturalist" not in str(url):
             continue
-        # Normalize to /large variant
-        import re
-        large = re.sub(r"/(small|medium|large|original|square)\.(jpe?g|png|gif|webp)",
-                       lambda m_: f"/large.{m_.group(2)}", str(url), flags=re.I)
+        large = _URL_RX.sub(lambda m_: f"/large.{m_.group(2)}", str(url))
+        # Construct a clean canonical taxon name (no authority) from DwC-A fields.
+        rank = str(r.get("taxonRank") or "").upper()
+        species, genus = r.get("species"), r.get("genus")
+        infra, cultivar = r.get("infraspecificEpithet"), r.get("cultivarEpithet")
+        if rank == "VARIETY" and species and isinstance(infra, str) and infra:
+            clean = f"{species} var. {infra}"
+        elif rank == "SUBSPECIES" and species and isinstance(infra, str) and infra:
+            clean = f"{species} subsp. {infra}"
+        elif rank in ("FORM", "FORMA") and species and isinstance(infra, str) and infra:
+            clean = f"{species} f. {infra}"
+        elif isinstance(cultivar, str) and cultivar and isinstance(genus, str):
+            clean = f"{genus} '{cultivar}'"
+        elif rank == "SPECIES" and isinstance(species, str) and species:
+            clean = species
+        elif rank == "GENUS" and isinstance(genus, str) and genus:
+            clean = genus
+        else:
+            clean = species or genus or r["scientificName"]
         rows.append({
             "gbif_occurrence_id": int(r["gbifID"]),
             "inat_observation_id": None,
             "inat_observation_uuid": r.get("occurrenceID"),
-            "taxon_name": rev.get(int(r["taxonKey"]), r["scientificName"]),
+            "taxon_name": rev.get(int(r["taxonKey"]), clean),  # canonical Calscape name when known
+            "taxon_name_verbatim": r["scientificName"],         # GBIF scientificName with authority
             "gbif_taxon_key": int(r["taxonKey"]),
+            "taxon_rank": rank,
             "inat_taxon_id": None,
             "dataset_role": "plant",
             "kingdom": "Plantae",
@@ -294,8 +319,10 @@ def parse_(
             "image_url_large": large,
             "image_url_original": None,
             "photo_id": None,
+            # per-photo license + creator (multimedia.txt — kept as `license`/`rightsHolder`)
             "license": r.get("license"),
             "rights_holder": r.get("rightsHolder"),
+            "creator": r.get("creator"),
             "observed_on": r.get("eventDate"),
             "decimal_latitude": r.get("decimalLatitude"),
             "decimal_longitude": r.get("decimalLongitude"),

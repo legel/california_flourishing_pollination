@@ -36,6 +36,20 @@ calscape = set(pd.read_parquet('data/processed/plants_california_native.parquet'
                ['scientific_name'].dropna().str.strip())
 print(f"[{datetime.utcnow().isoformat()}] canonical Calscape: {len(calscape):,}")
 
+def _clean_name(rank, species, genus, infra, cultivar, fallback):
+    rank = str(rank or "").upper()
+    species = species if isinstance(species, str) and species else None
+    genus = genus if isinstance(genus, str) and genus else None
+    infra = infra if isinstance(infra, str) and infra else None
+    cultivar = cultivar if isinstance(cultivar, str) and cultivar else None
+    if rank == "VARIETY" and species and infra: return f"{species} var. {infra}"
+    if rank == "SUBSPECIES" and species and infra: return f"{species} subsp. {infra}"
+    if rank in ("FORM","FORMA") and species and infra: return f"{species} f. {infra}"
+    if cultivar and genus: return f"{genus} '{cultivar}'"
+    if rank == "SPECIES" and species: return species
+    if rank == "GENUS" and genus: return genus
+    return species or genus or fallback
+
 def parse_dwca(path, role, kingdom, calscape_filter=False):
     with zipfile.ZipFile(path) as z:
         occ = pd.read_csv(z.open("occurrence.txt"), sep="\t", low_memory=False, on_bad_lines="skip")
@@ -45,12 +59,16 @@ def parse_dwca(path, role, kingdom, calscape_filter=False):
         before = len(occ)
         occ = occ[occ["scientificName"].isin(calscape)]
         print(f"    Calscape filter: {before:,} -> {len(occ):,}")
-    m = media.merge(
-        occ[["gbifID","scientificName","taxonKey","family","decimalLatitude",
-             "decimalLongitude","eventDate","license","rightsHolder","recordedBy",
-             "occurrenceID","verbatimLocality"]],
-        on="gbifID", how="inner"
+    # IMPORTANT: both DwC-A tables expose `license` and `rightsHolder`. Rename the
+    # occurrence-side cols BEFORE merge so pandas doesn't silently suffix them
+    # to `license_x`/`license_y` (root cause of the earlier 100%-null bug).
+    occ_renamed = occ[["gbifID","scientificName","taxonKey","taxonRank","species","genus",
+                       "specificEpithet","infraspecificEpithet","cultivarEpithet","family",
+                       "decimalLatitude","decimalLongitude","eventDate","license","rightsHolder",
+                       "recordedBy","occurrenceID","verbatimLocality"]].rename(
+        columns={"license":"license_occ","rightsHolder":"rightsHolder_occ"}
     )
+    m = media.merge(occ_renamed, on="gbifID", how="inner")
     rows = []
     snap = datetime.now(timezone.utc).isoformat()
     for _, r in m.iterrows():
@@ -62,14 +80,20 @@ def parse_dwca(path, role, kingdom, calscape_filter=False):
             "gbif_occurrence_id": int(r["gbifID"]),
             "inat_observation_id": None,
             "inat_observation_uuid": r.get("occurrenceID"),
-            "taxon_name": r["scientificName"],
+            "taxon_name": _clean_name(r.get("taxonRank"), r.get("species"), r.get("genus"),
+                                       r.get("infraspecificEpithet"), r.get("cultivarEpithet"),
+                                       r["scientificName"]),
+            "taxon_name_verbatim": r["scientificName"],
             "gbif_taxon_key": int(r["taxonKey"]),
+            "taxon_rank": str(r.get("taxonRank") or "").upper(),
             "inat_taxon_id": None,
             "dataset_role": role, "kingdom": kingdom,
             "family": r.get("family"),
             "image_url_large": large, "image_url_original": None,
             "photo_id": None,
+            # per-photo license + creator (multimedia.txt — kept as `license`/`rightsHolder`)
             "license": r.get("license"), "rights_holder": r.get("rightsHolder"),
+            "creator": r.get("creator"),
             "observed_on": r.get("eventDate"),
             "decimal_latitude": r.get("decimalLatitude"),
             "decimal_longitude": r.get("decimalLongitude"),
