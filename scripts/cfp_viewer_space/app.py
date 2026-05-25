@@ -424,9 +424,9 @@ with gr.Blocks(title="California Flourishing & Pollination",
                 resolution = gr.Slider(224, 1120, value=672, step=112,
                                         label="Overlay resolution (px)", scale=2)
                 normalize = gr.Checkbox(
-                    value=False,
+                    value=True,
                     label="Normalize colors per-image (max contrast)",
-                    info="off = cross-species global; on = per-channel min/max from this image",
+                    info="on = per-channel min/max from this image (default); off = cross-species global",
                     scale=2,
                 )
             render_status = gr.Markdown()
