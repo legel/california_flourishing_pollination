@@ -6,4 +6,5 @@ numpy
 requests
 pyarrow
 scikit-learn
+umap-learn
 audioop-lts; python_version >= "3.13"
