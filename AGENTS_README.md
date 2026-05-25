@@ -1,32 +1,49 @@
 # AGENTS_README — California Flourishing & Pollination
 
-> **For future agents working on this project.** This document is the single source of truth for what's running, what's been built, and what to know before changing anything. Read it end-to-end before acting. Keep it up to date when you change the system.
+> **For future agents, scientists, engineers, and developers working on this project.**
+> This is the single source of truth for what's built, what's running, what
+> was learned, and what to know before changing anything. Read it end-to-end
+> before acting. Keep it up to date when you change the system.
 
 ---
 
 ## 1. Project at a glance
 
-**Goal.** Produce a self-supervised, multi-modal, analysis-ready dataset of every Research-grade iNaturalist observation of every California-native plant and every California-observed flying pollinator, encoded with DINOv3 ViT-L/16 spatial features and PhenoVision flower/fruit probabilities. Published as `deepearth/california-flourishing-pollination` on Hugging Face. Powers downstream forecasting models in [`legel/deepearth/models/`](https://github.com/legel/deepearth/tree/main/models).
+**Goal.** Produce a self-supervised, multi-modal, analysis-ready dataset of
+every iNaturalist Research-grade observation of every California-native plant
+and every California-observed flying pollinator, encoded with **DINOv3
+ViT-L/16** spatial features and **PhenoVision** flower/fruit probabilities.
+Published as `deepearth/california-flourishing-pollination` on Hugging Face.
 
-**Collaboration.** Ecological Intelligence, Inc. (Lance Legel, PI; lance@ecological.dev; ecological.dev) × Quantitative Ecosystem Dynamics Lab at UC Berkeley (Trevor Keenan, PI; keenangroup.info). Affiliated-Organization research collaboration starting 2026-05-04.
+**Collaboration.** Ecological Intelligence, Inc. (Lance Legel, PI,
+lance@ecological.dev) × UC Berkeley Quantitative Ecosystem Dynamics Lab
+(Trevor Keenan, PI, keenangroup.info). Affiliated-Organization research
+collaboration starting 2026-05-04.
 
-**Citation (planned).** Legel, L. & Keenan, T. (2026). _California Flourishing & Pollination: a multi-modal AI dataset for ecological forecasting_. Hugging Face Dataset & companion manuscript.
+**Citation.** Legel, L. & Keenan, T. (2026). *California Flourishing &
+Pollination: a multi-modal AI dataset for ecological forecasting.* Hugging
+Face Dataset.
 
-**License.** MIT for code, generated parquets, embeddings, manifests. DINOv3 features are transformative derivatives of iNat photos — we never redistribute the photo bytes; per-photo license + URL are preserved per row.
+**License.** MIT for code, parquets, embeddings, manifests, lookups, model
+extraction artifacts. DINOv3 features are transformative derivatives of iNat
+photos — we never redistribute photo bytes; per-photo CC license + creator
+attribution preserved on every row.
 
 ---
 
-## 2. Live state (snapshot 2026-05-23T20:18 UTC, update when you change anything)
+## 2. Live state (snapshot 2026-05-25, update when you change anything)
 
 | | |
 |---|---|
-| Master manifest (initial scope) | `data/processed/image_manifest.parquet` — **9,851,832 URLs / 5,000,043 observations / 16,400 species** (6,432 plants + 9,968 pollinators) |
-| Embedded so far (initial scope) | ~9.35M (95 %); HF has 1,072 shards / 3.53 TB |
-| In-flight scope expansion | Two additional GBIF batches preparing to push the dataset past 10 M embeddings — see §5.f |
+| Master manifest | `data/processed/image_manifest.parquet` — **10,301,629 rows / 10,297,212 unique URLs / 5,244,656 observations / 16,446 species** (6,383 plants + 10,063 pollinators) |
+| Downloaded | **10,297,382** (100.00 %) — the remaining 22 are iNat 404s (deleted photos) |
+| Embedded | **10,273,298** (99.77 %) — the 24K gap is bad/corrupt JPEGs that nvJPEG could not decode |
+| License coverage | **100 %** (83 % CC BY-NC, 11 % CC BY, 4.2 % CC0, 1.7 % other CC) |
 | HF dataset | https://huggingface.co/datasets/deepearth/california-flourishing-pollination |
-| Storage quota | 8.7 TB total; ~40 % used; projected ~4.5 TB final after expansion |
-| Hardware | 1 × NVIDIA H200 (143 GB VRAM); ~1.3 TB local disk on `/home/legel`; 800 GB image-cache cap |
-| Watchdog cycle | **24 hours** (was 7 h earlier) — `scripts/autonomous_watchdog.sh` |
+| HF embedding shards | **1,275** / 4.15 TB (8.7 TB quota; 48 % used) |
+| PhenoVision label correctness on HF | **1,211 / 1,275 (95 %)** correct = 75 from post-fix embedder runs + 1,136 from the backfill swap. The remaining 64 are *legacy* pre-combined-extractor shards that never had PhenoVision columns at all (Phase 1.5 backlog item: run PhenoVision inference on those images to *add* the columns) |
+| HF Space (viewer) | https://huggingface.co/spaces/deepearth/california-flourishing-pollination |
+| Watchdog | `scripts/autonomous_watchdog.sh` — 24h cycle |
 
 Always re-check with the live-stats one-liner in §9.
 
@@ -36,187 +53,155 @@ Always re-check with the live-stats one-liner in §9.
 
 ```
 /home/legel/california_flourishing_pollination/
-├── README.md                — public README
-├── PROVENANCE.md            — exhaustive per-source provenance (CNPS, GloBi, DINOv3, etc.)
+├── README.md                — public README (Github)
+├── AGENTS_README.md         — THIS FILE
+├── PROVENANCE.md            — exhaustive per-source provenance with GBIF DOIs
 ├── ASSUMPTIONS.md           — every operational assumption + risk-if-wrong
 ├── PIPELINE.md              — streaming architecture overview
-├── RUN_GUIDE.md             — operator copy-paste recipe to rerun from scratch
+├── RUN_GUIDE.md             — operator copy-paste recipe
 ├── SESSION_HANDOVER.md      — historical handover from the long autonomous run
-├── AGENTS_README.md         — THIS FILE
+├── HANDOVER.md              — current-state handover for the next session
 ├── docs/
 │   ├── FLOURISHING.md       — plant-side track docs
 │   ├── POLLINATION.md       — pollinator-side track docs
 │   └── DINOV3_RUN.md        — concise CV-engineer-oriented run brief
 ├── src/cfp/                 — Python package (`pip install -e .`)
-│   ├── cnps/
-│   │   ├── calscape.py        # ingest Calscape Excel export (canonical CA-native list)
-│   │   ├── fetch.py           # legacy iNat species_counts fetch (superseded)
-│   │   └── match_inat.py      # robust iNat+GBIF cross-reference
-│   ├── globi/
-│   │   └── fetch_and_filter.py # GloBi download + RO-ontology pollination filter
-│   ├── pollinators/
-│   │   └── cross_check.py     # GloBi candidates × GBIF CA-presence × flight-ability
-│   ├── gbif/
-│   │   ├── build_manifest.py  # legacy per-species GBIF iteration (slow, deprecated)
-│   │   └── batch_download.py  # GBIF Occurrence Download API (CURRENT path)
+│   ├── cnps/calscape.py        # Canonical CA-native list (Calscape Excel)
+│   ├── globi/fetch_and_filter.py
+│   ├── pollinators/cross_check.py
+│   ├── gbif/batch_download.py  # GBIF Occurrence Download API
 │   ├── dinov3/
-│   │   ├── extractor.py        # PIL-path baseline (CPU decode, fallback)
-│   │   ├── extractor_gpu.py    # nvJPEG GPU-decode DINOv3
-│   │   ├── extractor_combined.py  # DINOv3 + PhenoVision in one GPU session (CURRENT)
-│   │   ├── visualize.py        # UMAP→RGB overlay (validation)
-│   │   └── validate_sample.py  # n-image DINOv3 sanity-check CLI
+│   │   ├── extractor.py
+│   │   ├── extractor_gpu.py
+│   │   ├── extractor_combined.py    # DINOv3 + PhenoVision in one GPU pass (CURRENT)
+│   │   ├── visualize.py
+│   │   └── validate_sample.py
 │   ├── pipeline/
-│   │   ├── download.py         # async iNat photo downloader (URL-keyed checkpoint)
-│   │   ├── embed.py            # GPU embedder (DataLoader workers, --gpu-decode, --with-phenovision)
-│   │   └── upload.py           # batched upload_large_folder uploader (CURRENT)
-│   └── hf/
-│       └── publish_meta.py    # one-shot push of species lists + dataset card
+│   │   ├── download.py
+│   │   ├── embed.py            # GPU embedder (async I/O flush thread)
+│   │   └── upload.py           # api.upload_large_folder uploader
+│   └── hf/publish_meta.py
 ├── scripts/
-│   ├── autonomous_watchdog.sh           # keeps download+embed+upload alive 7h
-│   ├── integrate_broad_pollinators.sh   # wait + parse + merge broad-pollinator DwC-A
-│   ├── analyze_calscape_globi.py        # plant×pollinator network analysis
-│   ├── hf_cleanup_noncanonical.py       # one-shot scrub HF shards to canonical Calscape
-│   └── merge_manifests.py               # legacy merge helper (superseded by batch_download)
-├── configs/pipeline.example.yaml
+│   ├── autonomous_watchdog.sh           # 24h cycle; supervises 3 workers
+│   ├── integrate_birds_and_extras.sh    # GBIF batch integration
+│   ├── integrate_broad_pollinators.sh
+│   ├── cleanup_orphan_jpgs.py
+│   ├── patch_license_and_names.py       # one-shot per-photo license + clean names
+│   ├── backfill_phenovision.py          # add PhenoVision to old shards (use _purge_cache)
+│   ├── fix_phenovision_swap_on_hf.py    # backfill old shards w/ swapped pheno cols (with cache cleanup)
+│   ├── retry_backfill_fails.py          # paced retry of HF rate-limited fails
+│   └── cfp_viewer_space/                # Gradio Space source
+│       ├── app.py
+│       ├── requirements.txt
+│       ├── species_list.json            # 404 KB, shipped for instant dropdown
+│       ├── extract_umap_numpy.py        # joblib -> numpy npz (version-independent)
+│       ├── train_umap.py                # one-shot UMAP train on 100K patches
+│       ├── train_global_pca.py          # one-shot Global PCA fit (18 KB output)
+│       ├── build_shard_index.py         # build lookups/shard_index.parquet
+│       └── sample_overlays.py           # generate side-by-side QA PNGs
 ├── data/
-│   ├── raw/                  # source snapshots (gitignored, kept as sha256-attested archives)
-│   │   ├── globi/            # GloBi interactions.tsv.gz + refuted
-│   │   ├── calscape/         # archived "Native To California.xlsx"
-│   │   └── gbif/             # plants_ca_inat.zip + pollinators_*.zip DwC-A archives
-│   └── processed/            # canonical parquets (gitignored except flight_ability_rules.csv)
-│       ├── plants_california_native.parquet      # 8,507 Calscape canonical
-│       ├── pollinators_california_flying.parquet # 1,275 GloBi-cross-checked
-│       ├── pollinators_candidates.parquet
-│       ├── pollinators_excluded.parquet
-│       ├── globi_ca_plant_pollinator.parquet     # 45,805 CA interactions
-│       ├── image_manifest.parquet                # **MASTER manifest (URL-grain)**
-│       ├── image_manifest_plants_gbif_batch.parquet
-│       ├── image_manifest_pollinators_broad.parquet  # broad pollinator GBIF batch
-│       ├── gbif_taxon_keys.json                  # name → GBIF taxon key (plants)
-│       ├── gbif_taxon_keys_pollinators.json
-│       ├── gbif_download_key.json                # GBIF batch download key (plants)
-│       ├── gbif_download_key_pollinators_broad.json
-│       └── flight_ability_rules.csv              # tracked in git
-├── outputs/                  # checkpoints + PIDs (gitignored except chain_pids.json)
-│   ├── checkpoint_downloaded.parquet    # URL-keyed
-│   ├── checkpoint_embedded.parquet      # URL-keyed
-│   ├── checkpoint_*.legacy_gbifid.parquet  # pre-multi-photo-fix backups
+│   ├── raw/
+│   │   ├── globi/            # interactions.tsv.gz (sha256 attested)
+│   │   ├── calscape/         # native_to_california.xlsx
+│   │   └── gbif/             # 4 DwC-A zips + .meta.json sidecars (DOIs)
+│   └── processed/
+│       ├── plants_california_native.parquet           # 8,507 Calscape taxa
+│       ├── pollinators_california_flying.parquet      # 1,275 GloBi-confirmed
+│       ├── globi_ca_plant_pollinator.parquet          # 45,805 CA interactions
+│       ├── image_manifest.parquet                     # MASTER — 10.30M URL rows
+│       ├── photo_attribution.parquet                  # per-photo CC license + creator (12.4M rows)
+│       ├── taxon_clean_names.parquet                  # clean binomial per GBIF taxon (21,349 taxa)
+│       └── gbif_taxon_keys*.json + gbif_download_key*.json
+├── outputs/                  # PIDs + checkpoints
+│   ├── checkpoint_downloaded.parquet
+│   ├── checkpoint_embedded.parquet
 │   ├── failed_downloads.parquet
-│   ├── chain_pids.json
-│   └── {watchdog,download,embed,upload,upload2}.pid
-├── provenance/               # per-stage JSONL audit logs (every API query, sha256, DOI)
-├── logs/                     # per-process logs
-└── vendor/phenovision/       # user's Python port of phenobase/phenovision (PR #1 fork)
+│   ├── backfill_retry.json   # 178 swap-fix retries
+│   └── {watchdog,download,embed,upload}.pid
+├── provenance/               # per-stage JSONL audit logs (every API query, hash, DOI)
+├── logs/                     # per-process logs (chain_download, chain_embed, chain_upload, watchdog, fix_phenovision_swap, retry_backfill_fails)
+└── vendor/phenovision/       # user's Python port (Phenobase PR #1 fork)
 
 External:
-/home/legel/cfp_images/       — image-cache buckets (gitignored; downloader → embedder pulls from here)
-/home/legel/cfp_shards/       — local embedding shards (gitignored; uploader pushes from here)
-/home/legel/.gbif/credentials — GBIF account creds (chmod 600)
-/home/legel/.cache/huggingface/token — HF auth token
+/home/legel/cfp_images/       — image cache (downloader → embedder)
+/home/legel/cfp_shards/       — local shards staging (embedder → uploader)
+/home/legel/cfp_shard_fix_tmp/— temp staging for the backfill swap (auto-purged after each upload)
+/home/legel/.gbif/credentials — GBIF auth (chmod 600)
+/home/legel/.cache/huggingface/token — HF token
 ```
 
 ---
 
-## 4. The four critical long-running processes
+## 4. The four critical processes (autonomous)
 
-Watchdog (`scripts/autonomous_watchdog.sh`) re-launches any of these on death every 60 s and writes a status snapshot to `logs/watchdog_status.log` every 5 min:
+The watchdog (`scripts/autonomous_watchdog.sh`) re-launches any that die
+every 60s and writes a status snapshot every 5 min to
+`logs/watchdog_status.log`:
 
 | Name | Command | Key flags |
 |---|---|---|
 | **download** | `python -m cfp.pipeline download` | `--manifest data/processed/image_manifest.parquet --image-dir /home/legel/cfp_images --concurrency 256 --per-host-concurrency 64 --cap-gb 800` |
-| **embed** | `python -m cfp.pipeline embed` | `--image-dir /home/legel/cfp_images --shard-dir /home/legel/cfp_shards --backbone vitl16 --image-size 224 --batch-size 32 --gpu-decode --with-phenovision --poll-seconds 60` |
-| **upload** | `python -m cfp.pipeline upload` | `--shard-dir /home/legel/cfp_shards --repo deepearth/california-flourishing-pollination --poll-seconds 300`  — uses `api.upload_large_folder` (one git commit per batch, ~290 MB/s; see B5) |
-| **watchdog** | `scripts/autonomous_watchdog.sh` | runs **24 hours** then exits; rearm with `nohup bash scripts/autonomous_watchdog.sh > logs/watchdog.log 2>&1 &` |
+| **embed** | `python -m cfp.pipeline embed` | `--image-dir /home/legel/cfp_images --shard-dir /home/legel/cfp_shards --backbone vitl16 --image-size 224 --batch-size 256 --images-per-shard 10000 --poll-seconds 10 --gpu-decode --with-phenovision` |
+| **upload** | `python -m cfp.pipeline upload` | `--shard-dir /home/legel/cfp_shards --repo deepearth/california-flourishing-pollination --poll-seconds 300` (uses `api.upload_large_folder` — see B5) |
+| **watchdog** | `scripts/autonomous_watchdog.sh` | runs 24 h then exits; rearm with `nohup bash scripts/autonomous_watchdog.sh > logs/watchdog.log 2>&1 &` |
 
-PIDs are in `outputs/{name}.pid`. To stop everything cleanly:
+PIDs in `outputs/{name}.pid`. To stop everything cleanly:
 ```bash
 kill $(cat outputs/watchdog.pid) $(cat outputs/{download,embed,upload}.pid 2>/dev/null)
 ```
 
 ---
 
-## 5. Data sources and the GBIF batch download path
+## 5. Data sources & GBIF batch DOIs
 
-### 5a. Plants — CNPS Calscape (canonical) + GBIF Occurrence Download
-
-- Calscape export `~/Native To California.xlsx` (manual UI download from `calscape.org/search` because Cloudflare Turnstile blocks all automated access). Archived at `data/raw/calscape/native_to_california.xlsx` (sha256 attested).
-- Ingested by `cfp.cnps calscape ingest` → `data/processed/plants_california_native.parquet` (8,507 taxa × 50 trait fields).
-- GBIF batch download: predicate `{DATASET_KEY=50c9509d-... (iNat Research-grade), COUNTRY=US, STATE_PROVINCE=California, MEDIA_TYPE=StillImage, TAXON_KEY IN <7,556 keys resolved via /species/match>}`. **DOI `10.15468/dl.pbgs4h`**; 3.6M occurrences; DwC-A at `data/raw/gbif/plants_ca_inat.zip` (2.0 GB); parsed → `data/processed/image_manifest_plants_gbif_batch.parquet`.
-- CNPS definition of native (verbatim, https://cnps.org/gardening/why-natives/what-are-native-plants):
-  > Our native plants grew here prior to European contact. California's native plants evolved here over a very long period, and are the plants which the first Californians knew and depended on for their livelihood.
-
-### 5b. Pollinators — broad GBIF batch (Insecta + Trochilidae + Chiroptera)
-
-- Same GBIF predicate, but `TAXON_KEY IN [216 Insecta, 5289 Trochilidae, 734 Chiroptera]`. **DOI `10.15468/dl.cvbfp4`**; 1.5M occurrences; DwC-A at `data/raw/gbif/pollinators_broad_ca_inat.zip` (0.83 GB); parsed → `data/processed/image_manifest_pollinators_broad.parquet`.
-- Formicidae (ants — flightless workers) **excluded at parse time** per project scope (see `scripts/integrate_broad_pollinators.sh`).
-
-### 5c. Plant × pollinator interaction graph — GloBi (label/auxiliary)
-
-- Source: `https://depot.globalbioticinteractions.org/snapshot/target/data/tsv/interactions.tsv.gz` (concept DOI `10.5281/zenodo.3950589`, Poelen et al. 2014).
-- 2.6 GB compressed; archived at `data/raw/globi/interactions.tsv.gz` (sha256 `85723ad5d7d86bf6f8e9ccd325a68a67d2e3fb61c4c32d3a15634fe49bf819ee`).
-- Filter via RO ontology IRIs (apply to `interactionTypeId`, **not** label):
-  - `RO_0002455` pollinates / `RO_0002456` pollinatedBy
-  - `RO_0002622` visitsFlowersOf / `RO_0002623` flowersVisitedBy
-- CA geographic filter: bbox `[-124.55,-114.13] × [32.53, 42.01]` OR locality regex `(?i)\b(California|Calif\.|\bCA\b)\b` excluding `Baja\s+California`.
-- Output: `data/processed/globi_ca_plant_pollinator.parquet` (45,805 rows). Auxiliary signal for downstream pollination-network models.
-
-### 5f. Scope-expansion batches (in flight 2026-05-23)
-
-To push the dataset above 10 M embeddings while staying scientifically inside scope, two additional GBIF batches are queued. The autonomous integrator `scripts/integrate_birds_and_extras.sh` waits for both DwC-A zips, parses each (Calscape canonical name filter applied to plant rows; no filter on bird rows), merges into the master `image_manifest.parquet`, and signals the downloader to relaunch with the bigger manifest.
-
-| Batch | GBIF key | Predicate | Records | Out zip | DOI (when ready) |
+| # | Source | Predicate | Records | GBIF key | DOI |
 |---|---|---|---|---|---|
-| **Bird pollinators (expanded)** | `0009596-260519110011954` | `TAXON_KEY ∈ {5289 Trochilidae, 9201093 Ptiliogonatidae, 9321 Mimidae, 6176 Icteridae, 5263 Parulidae, 9285 Cardinalidae, 5215 Bombycillidae}` × CA × iNat-RG × StillImage | 326,544 | `data/raw/gbif/bird_pollinators_ca_inat.zip` | `data/processed/gbif_download_key_birds.json` |
-| **Plant extras (Calscape unmatched recovery)** | `0009598-260519110011954` | 49 unique GBIF taxon keys recovered from Calscape's 487 unmatched names — 29 cultivar-parent genera (Iris, Diplacus, Ceanothus, Arctostaphylos, Salvia, Heuchera, Epilobium, …) + 32 variety species heads + 62 fuzzy/HIGHERRANK matches | 4,611,190 | `data/raw/gbif/plants_extras_ca_inat.zip` | `data/processed/gbif_download_key_plants_extras.json` |
+| 1 | iNat-RG plants × CA × Calscape canonical | `TAXON_KEY IN [Calscape keys]` | 3,607,437 | `0007278-260519110011954` | [`10.15468/dl.pbgs4h`](https://doi.org/10.15468/dl.pbgs4h) |
+| 2 | iNat-RG pollinators broad scope | `TAXON_KEY IN [216 Insecta, 5289 Trochilidae, 734 Chiroptera]` | 1,497,966 | `0007705-260519110011954` | [`10.15468/dl.cvbfp4`](https://doi.org/10.15468/dl.cvbfp4) |
+| 3 | iNat-RG expanded bird pollinators | `TAXON_KEY IN [5289 Trochilidae, 9201093 Ptiliogonatidae, 9321 Mimidae, 6176 Icteridae, 5263 Parulidae, 9285 Cardinalidae, 5215 Bombycillidae]` | 326,544 | `0009596-260519110011954` | [`10.15468/dl.gphfhs`](https://doi.org/10.15468/dl.gphfhs) |
+| 4 | iNat-RG plant extras (cultivar recovery) | 49 GBIF keys recovering 487 Calscape names that didn't match on first pass (29 cultivar-parent genera + 32 variety species heads + 62 HIGHERRANK matches) | 4,611,190 | `0009598-260519110011954` | [`10.15468/dl.nbe8dt`](https://doi.org/10.15468/dl.nbe8dt) |
 
-Out of Calscape's 8,507 canonical natives, 487 (5.7 %) did not match the GBIF backbone on first pass:
-- 391 named cultivars in `Genus 'Cultivar Name'` form (e.g. *Arctostaphylos 'Emerald Carpet'*, *Arctostaphylos 'Howard McMinn'*, *Iris 'Canyon Snow'*) — cultivars aren't formal taxa in GBIF backbone. **Recovered via genus-level GBIF queries** (29 unique genera); Calscape canonical name filter at parse time keeps only natives in the master manifest.
-- 34 var./subsp./forma — recovered via species-head match.
-- 62 plain unmatched species — recovered via GBIF `strict=false` + HIGHERRANK acceptance.
+Each `gbif_occurrence_id` in the master manifest is citable back to one of
+these DOIs. DwC-A zips archived at `data/raw/gbif/` with `.meta.json` sidecars.
 
-After integration, the master manifest is projected to land at **~11-12 M URLs** across ~17,000 species. See `data/processed/gbif_taxon_keys_extras.json` for the 49 new keys + full per-name match log.
+**Calscape canonical native list:** 8,507 taxa from manual Excel export
+(Cloudflare blocks all automated access to Calscape). See PROVENANCE.md §1a.
 
-### 5d. PhenoVision (flower / fruit labels)
-
-- Model: `phenobase/phenovision` (ViT-B/16, MIT, Dinnage 2025 — Methods in Ecology and Evolution 16(8):1763).
-- Loaded alongside DINOv3 in the combined extractor; output `flowering_prob` + `fruiting_prob` ∈ [0,1] per image.
-- Image processor: ImageNet mean/std at 224² (same as DINOv3 — they share the preprocessed tensor).
-
-### 5e. DINOv3
-
-- Model: `facebook/dinov3-vitl16-pretrain-lvd1689m` (300M params, gated). License accepted under HF account `ecodash`.
-- Precision: **bf16** (fp16 → NaN in attention end-to-end; see ASSUMPTIONS.md §E).
-- Input: 224² RGB. Output: CLS `(1024,)` + 4 register tokens (discarded) + 14×14 patch tokens `(14, 14, 1024)`.
-- Stored as `np.float16` bytes in parquet (`cls_fp16`, `patches_fp16` columns; sizes in `cls_shape`, `patches_shape`).
+**Flight-ability rules:** `data/processed/flight_ability_rules.csv` — orders
++ families that are flying-pollinator candidates. Formicidae excluded
+(flightless workers).
 
 ---
 
 ## 6. Pipeline architecture
 
 ```
-GBIF Occurrence Download (one-shot per role) ─┐
-                                              ▼
-                              data/processed/image_manifest.parquet  (9.85M URL rows)
-                                              │
-                            ┌─────────────────┴─────────────────┐
-                            ▼                                   ▼
-                       DOWNLOADER                            (resumable via
-            (async aiohttp, conc=256, cap=800GB)        outputs/checkpoint_downloaded.parquet
-                            │                              keyed by image_url_large)
+GBIF Occurrence Download (4 DOI'd downloads) ──┐
+                                               ▼
+                  data/processed/image_manifest.parquet  (10.30M URL rows)
+                                               │
+                            ┌──────────────────┴───────────────────┐
+                            ▼                                      ▼
+                       DOWNLOADER                          (URL-keyed checkpoint:
+            (aiohttp, conc=256, cap=800GB)           outputs/checkpoint_downloaded.parquet)
+                            │
                             ▼
               /home/legel/cfp_images/<gbif%1000>/<gbif_id>_<urlhash8>.jpg + .json
                             │
                             ▼
                         EMBEDDER  (GPU)
        ┌──────────────────────────────────────────────────────────────┐
-       │  DataLoader workers (num_workers=12-16) read raw JPEG bytes  │
-       │  Main thread:                                                │
-       │    1. nvJPEG decode_jpeg(device='cuda')   ~2 ms/img          │
-       │    2. F.interpolate to 224² (bilinear+antialias)             │
-       │    3. ImageNet normalize on GPU tensor                       │
-       │    4. DINOv3 ViT-L/16 forward  → CLS + patches               │
-       │    5. PhenoVision ViT-B/16 forward → sigmoid(logits)         │
-       │    6. fp16 cast, parquet shard write, image unlink           │
+       │  DataLoader workers (num_workers=16) read JPEG bytes         │
+       │  Main thread (batch_size=256, bf16):                         │
+       │    1. BATCH nvJPEG decode_jpeg(list, device='cuda')          │
+       │    2. F.interpolate → 224² + ImageNet normalize on GPU       │
+       │    3. DINOv3 ViT-L/16 forward → CLS + patches                │
+       │    4. PhenoVision ViT-B/16 forward → sigmoid(logits)         │
+       │       (index 0 = fruiting, index 1 = flowering — see B9)    │
+       │    5. fp16 cast + row append                                 │
+       │  Background-thread ThreadPoolExecutor (see B10):             │
+       │    - shard parquet write (4 GB, was blocking GPU 5-10s)      │
+       │    - sidecar unlink                                          │
        └──────────────────────────────────────────────────────────────┘
                             │  (10K rows per ~4 GB shard)
                             ▼
@@ -228,14 +213,11 @@ GBIF Occurrence Download (one-shot per role) ─┐
        │  Every 5 min: symlink all candidate shards into a temp dir   │
        │  under embeddings/ prefix, call api.upload_large_folder      │
        │  (ONE git commit + parallel xet chunks ≈ 290 MB/s)           │
-       │  Re-query remote, delete local shards confirmed on HF        │
        └──────────────────────────────────────────────────────────────┘
                             │
                             ▼
        https://huggingface.co/datasets/deepearth/california-flourishing-pollination
 ```
-
-Backpressure: each stage runs at its own pace; the disk acts as the queue. If downloader gets too far ahead it self-throttles at `--cap-gb 800`. If embedder lags, queue grows; once embedder catches up, queue drains.
 
 ---
 
@@ -244,38 +226,29 @@ Backpressure: each stage runs at its own pace; the disk acts as the queue. If do
 ```python
 {
   "gbif_occurrence_id": int64,
-  "inat_observation_id": int64 | None,
-  "inat_observation_uuid": str | None,
-  "taxon_name": str,                # scientificName from GBIF
+  "taxon_name": str,                    # CLEAN binomial (no authority)
   "gbif_taxon_key": int64,
-  "inat_taxon_id": int64 | None,
   "dataset_role": "plant" | "pollinator",
-  "kingdom": "Plantae" | "Animalia",
-  "family": str | None,
-  "image_url_large": str,           # iNat S3 URL — we don't redistribute the photo
-  "image_url_original": str | None,
-  "license": str | None,            # per-photo iNat license
-  "rights_holder": str | None,
-  "observed_on": str | None,
-  "decimal_latitude": float64 | None,
-  "decimal_longitude": float64 | None,
-  "locality": str | None,
-  "recorder_login": str | None,
-  "snapshot_utc": str,
-  "cls_fp16": bytes,                # np.float16 (1024,) packed
-  "patches_fp16": bytes,            # np.float16 (14, 14, 1024) packed
+  "license": str,                       # per-photo CC URL (e.g. http://creativecommons.org/licenses/by-nc/4.0/)
+  "inat_observation_id": int64 | None,
+  "image_url_large": str,               # iNat S3 URL — we don't redistribute the photo
+  "observed_on": str,
+  "decimal_latitude": float64,
+  "decimal_longitude": float64,
+  "cls_fp16": bytes,                    # np.float16 (1024,) packed
+  "patches_fp16": bytes,                # np.float16 (14, 14, 1024) packed
   "cls_shape": [1024],
   "patches_shape": [14, 14, 1024],
   "backbone": "vitl16",
   "repo": "facebook/dinov3-vitl16-pretrain-lvd1689m",
-  "phenovision_flowering_prob": float32,
-  "phenovision_fruiting_prob": float32,
-  "phenovision_repo": "phenobase/phenovision",
   "embedded_utc": str,
+  "phenovision_flowering_prob": float32,    # sigmoid output, 0..1
+  "phenovision_fruiting_prob": float32,     # sigmoid output, 0..1
+  "phenovision_repo": "phenobase/phenovision",
 }
 ```
 
-Decode at use time:
+Decode at use:
 ```python
 import numpy as np, pandas as pd
 df = pd.read_parquet("embeddings/embeddings_*.parquet")
@@ -286,47 +259,22 @@ patches = np.frombuffer(r["patches_fp16"], dtype=np.float16).reshape(r["patches_
 
 ---
 
-## 8. Key bugs found and fixed (DO NOT regress these)
+## 8. Lookup files on HF (`lookups/`)
 
-### B1. DINOv3 ViT-L/16 fp16 → NaN
-- Symptom: every embedding cls/patch was `nan` end-to-end. fp16 attention overflow.
-- Fix: bf16 default in `extractor*.py`. Numerically equivalent to fp32 at fp16 speed.
-- Discovery cost: 15,643 wasted embeddings; scrubbed.
-
-### B2. Shard-name collision after embedder restart
-- Symptom: uploader saw existing remote name, skipped local shard with same name but different content.
-- Fix: every embedder run gets a `run_id = "%Y%m%dT%H%M%S"` prefix; shard names are `embeddings_<run_id>_<idx>.parquet`.
-
-### B3. nvJPEG/decode_image variably 3D or 4D output
-- Symptom: F.interpolate raised "5D input" error; embedder crash-looped for ~3 h. Watchdog kept relaunching at 1/min.
-- Fix: defensive shape normalization in `extractor_combined.py` and `extractor_gpu.py` (handle 2D/3D/4D, RGBA→RGB, grayscale→RGB).
-- Lesson: every decoder error path needs explicit `failed_idx` tracking — never crash a batch on one bad image.
-
-### B4. Multi-photo observations dropped (gbif_id-keyed checkpoints)
-- Symptom: download/embed checkpoints were `gbif_occurrence_id`-keyed. iNat observations average 1.99 photos (49% have >1, max 116). We embedded only one photo per obs ⇒ 4.3M instead of 8.5M.
-- Fix: checkpoints + image filenames switched to URL-keyed (`<gbif_id>_<urlhash8>.<ext>` + `image_url_large` checkpoint column). Legacy gbif_id-keyed checkpoints backed up to `*.legacy_gbifid.parquet`.
-
-### B5. HF xet upload throttle from parallel per-file uploads
-- Symptom: per-file `api.upload_file` works at 30 MB/s → after parallel-uploader experiment, throttled to 8 MB/s and stalls entirely.
-- Fix: rewrite uploader to use `api.upload_large_folder` (ONE commit per batch + parallel xet chunks). Measured 290 MB/s effective = 260 shards/hour vs 2/hour throttled.
-- Lesson: HF Hub rate-limits commit creation; one large commit is dramatically better than many small ones for bulk LFS work.
-
-### B6. iNat species_counts page cap silently truncates
-- Symptom: `/v1/observations/species_counts` hard-caps `page * per_page ≤ 10,000`. We thought we had all CA-native taxa; we had only top-by-obs-count.
-- Resolution: switched to Calscape Excel (manual export) as canonical authority. iNat is now a secondary cross-reference. Note that `not_in_taxon_id` does NOT continue past the cap on this endpoint (verified).
-
-### B7. iNat `establishment_means=native` ≠ "native to California"
-- Symptom: returned 18,676 taxa including Australian (`Melaleuca`), African (`Encephalartos`), Asian (`Camptotheca`) species — community-curation noise.
-- Resolution: use `native=true` shortcut instead (the per-place strict flag). 8,869 clean taxa. But: Calscape Excel is the truer source — use that, with iNat as a join for taxon_id + obs counts.
-
-### B8. `taxon_scheme_id` parameter silently ignored on `/v1/taxa`
-- Don't try to use iNat taxon scheme #12 (Calflora mirror) as a query filter; the API ignores it.
+| File | Size | Purpose |
+|---|---|---|
+| `lookups/photo_attribution.parquet` | 236 MB | per-photo CC license + rights_holder + creator from GBIF multimedia.txt (12.4M rows) — join to embedding shards on `(gbif_occurrence_id, image_url_large)` |
+| `lookups/taxon_clean_names.parquet` | 1.4 MB | clean binomial (no authority) + rank per `gbif_taxon_key` (21,349 taxa) |
+| `lookups/shard_index.parquet` | 111 MB | `image_url_large → shard_path` (99.4 % coverage of all shards) — for the Space viewer |
+| `lookups/umap_numpy.npz` | 206 MB | pretrained UMAP(1024→3) training data + 3D embeddings + channel ranges — version-independent (use sklearn NearestNeighbors to approximate transform) |
+| `lookups/umap_encoder.joblib` | 1.46 GB | original UMAP encoder (joblib pickle; Python-3.11-only — see B11) |
+| `lookups/global_pca.npz` | 18 KB | top-3 global PCA components fitted on 500K patch tokens (deprecated by UMAP but kept for fallback) |
 
 ---
 
 ## 9. Inspect-the-live-system one-liners
 
-Latest stats:
+**Live stats**:
 ```bash
 cd /home/legel/california_flourishing_pollination
 /home/legel/miniconda3/envs/cfp/bin/python <<'PY'
@@ -348,24 +296,23 @@ print(f"queue: {q:,} imgs, {len([f for f in os.listdir('/home/legel/cfp_shards')
 PY
 ```
 
-Process health:
+**Process health**:
 ```bash
 for n in watchdog download embed upload; do
   pid=$(cat outputs/${n}.pid 2>/dev/null)
-  alive="DEAD"; [ -d /proc/$pid ] && alive="alive elapsed=$(ps -p $pid -o etime= | tr -d ' ') cpu=$(ps -p $pid -o pcpu= | tr -d ' ')%"
+  alive="DEAD"; [ -d /proc/$pid ] && alive="alive elapsed=$(ps -p $pid -o etime= | tr -d ' ')"
   echo "  $n  pid=$pid  $alive"
 done
 ```
 
-GPU duty cycle (rapid sample):
-```bash
-PEAK=0; SUM=0; for i in $(seq 1 50); do U=$(nvidia-smi --query-gpu=utilization.gpu --format=csv,noheader,nounits); SUM=$((SUM+U)); [ "$U" -gt "$PEAK" ] && PEAK=$U; sleep 0.1; done
-echo "PEAK: ${PEAK}%   AVG: $((SUM/50))%"
-```
-
-Tail logs:
+**Tail logs**:
 ```bash
 tail -F logs/chain_{download,embed,upload}.log logs/watchdog_status.log
+```
+
+**Disk** (watch for runaway HF cache):
+```bash
+df -h /home/legel; du -sh /home/legel/.cache/huggingface/hub /home/legel/cfp_shards /home/legel/cfp_images
 ```
 
 ---
@@ -374,24 +321,22 @@ tail -F logs/chain_{download,embed,upload}.log logs/watchdog_status.log
 
 | | |
 |---|---|
-| Hugging Face | `~/.cache/huggingface/token` (write token). Logged in as `ecodash`, member of `deepearth` org. `hf` CLI at `/home/legel/miniconda3/bin/hf` (also in `cfp` env). |
-| GBIF | `~/.gbif/credentials` (chmod 600): `GBIF_USERNAME=3co`, `GBIF_PASSWORD=…`, `GBIF_EMAIL=lance@3co.ai`. Required for Occurrence Download submissions. |
-| GitHub | `gh` CLI authenticated as `legel`. Code repos: `legel/california_flourishing_pollination` (this), `legel/deepearth` (downstream models), `legel/phenovision` (Python port of PhenoVision). |
-| Bucket | `hf://buckets/deepearth/cfp-raw-images` exists but currently empty (Phase 1.5 raw-image archive target). |
+| Hugging Face | `~/.cache/huggingface/token` (write token). Logged in as `ecodash`, member of `deepearth` org. |
+| GBIF | `~/.gbif/credentials` (chmod 600): `GBIF_USERNAME=3co`, `GBIF_PASSWORD=…`, `GBIF_EMAIL=lance@3co.ai`. |
+| GitHub | `gh` CLI authenticated as `legel`. Repo: `legel/california_flourishing_pollination`. |
 
 ---
 
-## 11. Throughput numbers (verified)
+## 11. Throughput numbers (verified, post-all-fixes)
 
 | Stage | Sustained | Notes |
 |---|---|---|
-| Downloader | ~100-200 img/sec | iNat CDN, network-bound; conc=256 |
-| Embedder (DINOv3 ViT-L/16 + PhenoVision, bf16, batch 32, gpu_decode) | ~170 img/sec (170-370 peak with no PhenoVision) | H200 with nvJPEG decode |
-| Embed without PhenoVision | ~500 img/sec | PhenoVision adds ~30% per-batch overhead |
-| nvJPEG single-image decode | ~2 ms | 5× faster than PIL on H200 |
-| GPU util | duty cycle ~20-40% avg, 100% peak | network/decoder-bound, GPU has headroom |
-| Uploader (upload_large_folder, batched commit) | ~290 MB/s = ~260 shards/hr | xet's batch path |
-| Uploader (per-file upload_file, throttled) | 8-30 MB/s = 2-72 shards/hr | DO NOT USE |
+| Downloader | 70-200 URL/s | iNat CDN, network-bound; conc=256 |
+| Embedder (DINOv3-L/16 + PhenoVision, bf16, batch 256, GPU decode + async I/O) | **~260-340 img/s sustained, 585 img/s standalone (H200 ceiling)** | GPU util 47-59 % during active; 0 % during DataLoader spawn between rounds |
+| nvJPEG batch decode | <1 ms/img | single CUDA call for the whole batch |
+| GPU memory | 4-5 GB at batch=256 | H200 has 143 GB; room for batch=2048+ |
+| Uploader (`upload_large_folder`) | ~290 MB/s = ~260 shards/hr | one git commit per batch + parallel xet chunks |
+| Backfill (shard swap + re-upload) | ~60/hour with 30s pacing | rate-limited to 128 commits/hour by HF |
 
 ---
 
@@ -400,87 +345,150 @@ tail -F logs/chain_{download,embed,upload}.log logs/watchdog_status.log
 **IN:**
 - iNaturalist Research-grade observations
 - In `country=US, state_province=California`
-- With at least one still image
-- Plant species in the Calscape canonical list (8,507 species, 6,432 with photos)
-- Animal species in {Insecta ∪ Trochilidae ∪ Chiroptera} minus Formicidae (9,968 species with photos)
+- With at least one still image (NOT Sound media — see B12)
+- Plant species in the Calscape canonical list (8,507 species, **6,383 with photos**)
+- Animal species in {Insecta ∪ Trochilidae ∪ Chiroptera ∪ Ptiliogonatidae ∪ Mimidae ∪ Icteridae ∪ Parulidae ∪ Cardinalidae ∪ Bombycillidae} minus Formicidae (**10,063 species with photos**)
 - Multi-photo observations contribute one row per photo (mean 1.99 photos/obs)
+- Per-photo CC license + rights_holder + creator preserved on every row
 
 **NOT IN:**
-- Non-Research-grade iNat observations (Casual + Verifiable)
+- Non-Research-grade iNat observations
 - Plants outside Calscape canonical (rare CA natives without Calscape listing)
-- Pollinators outside Insecta+Trochilidae+Chiroptera (excludes some flower-visiting birds, e.g. Mimidae)
-- Formicidae (ants — flightless workers, per project scope)
-- Observations recorded after the GBIF snapshot date (2026-05-22)
-
-Coverage is honest and Nature-paper-defensible; expanding scope is a Phase 1.5 task.
+- Pollinators outside the listed families
+- Formicidae (ants — flightless workers, project scope)
+- Sound media (filtered post-bug-B12)
+- Observations after the GBIF snapshot date (latest 2026-05-23)
+- The 22 iNat photos that 404'd at fetch time
 
 ---
 
-## 13. Phase 1.5 backlog (deferred work)
+## 13. Key bugs found and fixed — **READ THIS BEFORE CHANGING ANYTHING**
 
-1. **Raw-image bucket archive** — push photo bytes to `hf://buckets/deepearth/cfp-raw-images` as a ~24 h background sync once embedding completes. Bucket exists, empty. ~2.4 TB.
-2. **PhenoVision backfill** — the first ~575K embeddings on HF predate the combined extractor (DINOv3 only, no PhenoVision). Re-process those specific image URLs through PhenoVision only and patch in the columns.
-3. **PhenoVision spatial localization** — DINOv3 patches × PhenoVision classifier → patch-level flowering probability. Or train a flower-segmentation head on the DINOv3 features.
-4. **Recover the rare ~8K tail** of CA-native plant taxa beyond Calscape's 8,507. Path: Jepson MOU or family-level GBIF query splitting.
-5. **Expand pollinator scope** further (Aves beyond Trochilidae — orioles, tanagers, warblers as occasional flower visitors).
-6. **Re-fetch iNat establishment_means with the proper `native=true` filter** for the 35-row leakage in the current Calscape parquet's `inat_taxon_id` / `ca_observation_count` columns.
-7. **Add per-row CC-license filter** as a sidecar parquet so downstream consumers can quickly subset to permissive licenses.
+### B1. DINOv3 ViT-L/16 fp16 → NaN
+- Symptom: every embedding was `nan`. fp16 attention overflow.
+- Fix: bf16 default. Numerically equivalent to fp32, fp16 speed on H200.
+- Cost: 15,643 wasted embeddings; scrubbed.
+
+### B2. Shard-name collision after embedder restart
+- Symptom: uploader saw existing remote name, skipped new local shard with same name.
+- Fix: every embedder run gets `run_id = "%Y%m%dT%H%M%S"` prefix.
+
+### B3. nvJPEG/decode_image variable 3D or 4D output
+- Symptom: F.interpolate raised "5D input" error; embedder crash-looped for ~3 h.
+- Fix: defensive shape normalization in extractor (handle 2D/3D/4D, RGBA→RGB, grayscale→RGB).
+
+### B4. Multi-photo observations dropped (gbif_id-keyed checkpoints)
+- Symptom: gbif_id-keyed checkpoint kept 1 photo per obs (49 % have >1, max 116). We embedded 4.3 M of 8.5 M.
+- Fix: URL-keyed checkpoints + `<gbif_id>_<urlhash8>.<ext>` filenames.
+
+### B5. HF xet upload throttle from per-file uploads
+- Symptom: per-file `api.upload_file` works at 30 MB/s → after parallel experiment, throttled to 8 MB/s.
+- Fix: `api.upload_large_folder` (one commit + parallel xet chunks). 290 MB/s.
+
+### B6. iNat species_counts page cap silently truncates
+- Hard cap `page * per_page ≤ 10,000`. Switched to Calscape Excel as canonical authority.
+
+### B7. iNat `establishment_means=native` ≠ "native to California"
+- Returned Australian/Asian non-natives. Use `native=true` (per-place) or Calscape directly.
+
+### B8. `taxon_scheme_id` parameter silently ignored on `/v1/taxa`.
+
+### B9. PhenoVision label swap — flowering and fruiting columns flipped
+- **Per `vendor/phenovision/inference.py`: `class_names = ['fruiting', 'flowering']`** — index 0 is fruiting, index 1 is flowering.
+- The combined extractor (and the backfill_phenovision.py script) had them swapped (`flowering = probs[:,0]`).
+- Impact: every embedding shard uploaded with run_id before `20260524T070916` had the column NAMES correct but the VALUES swapped.
+- Fixes:
+  - `src/cfp/dinov3/extractor_combined.py` — swapped indexes; future shards correct.
+  - Embedder restarted with run_id `20260524T070916`.
+  - `scripts/fix_phenovision_swap_on_hf.py` — downloads each old shard, swaps the two column values, re-uploads. 1,200 shards processed. xet dedupes the 99 % unchanged bytes so per-shard transfer is small.
+  - `scripts/retry_backfill_fails.py` — paced retry for 178 HfHubHTTPError + xet errors from the first pass.
+- Status: **95 % of HF shards now correct**; 5 % are legacy shards with no PhenoVision columns at all (Phase 1.5 work to add them).
+
+### B10. Embedder didn't flush shards for hours
+- Symptom: 6 hours after restart, 0 new shards on HF. Embedder logs said "round N embedded 2640 images" but no shards on disk. GPU 0 %.
+- Root cause: **2,640 audio files** (`.wav`, `.mp3`, `.mpga`, `.m4a`) leaked into the manifest from the GBIF bird-pollinator batch (`multimedia.type='Sound'` rows). The downloader saved them with `.jpg` extension. The embedder couldn't decode any of them → `flush_batch()` had empty `surviving_paths` → bad files never got deleted → re-scanned forever, clogged the queue, no actual embeddings happened.
+- Fixes:
+  - `scripts/integrate_birds_and_extras.sh` + `src/cfp/gbif/batch_download.py` — filter `media.type == 'StillImage'` before merging.
+  - `src/cfp/pipeline/embed.py` — when a batch image fails nvJPEG, **also delete it from disk** (was only deleting "surviving" successful images).
+  - One-shot purge of 2,594 audio URLs from master manifest + 2,637 audio files from disk + corresponding checkpoint entries.
+
+### B11. UMAP encoder load fails on Space (Python-version mismatch)
+- Symptom: `TypeError: unsupported operand type(s) for +: 'ABCMeta' and 'dict'` when joblib-loading `umap_encoder.joblib` on the Space.
+- Root cause: UMAP trained under Python 3.11 (local env), Space runs Python 3.13. The pickled UMAP class graph can't be reconstructed across Python versions (numba/pynndescent metaclass issue).
+- Fix: `scripts/cfp_viewer_space/extract_umap_numpy.py` — extracts the UMAP's `_raw_data` + `embedding_` + channel ranges as a plain numpy `.npz` (206 MB, no class graph). The Space approximates `transform()` via `sklearn.NearestNeighbors` distance-weighted average of neighbor embeddings — visually identical to UMAP's transform for our use case, works under any Python version.
+
+### B12. GBIF Sound media leaking as audio-as-jpg (see B10 root cause)
+
+### B13. Shard-backfill script accumulated 970 GB in HF cache → filled disk
+- Symptom: After ~250 shards processed, disk hit 100 %; all pipeline worker PID writes failed; watchdog spawned 9 zombie embed processes.
+- Root cause: `hf_hub_download` caches each shard (~3-4 GB). 1,200 shards × 3 GB = 3.6 TB unbounded cache.
+- Fix: `scripts/fix_phenovision_swap_on_hf.py` — `_purge_cache()` unlinks both the snapshot symlink and the underlying blob immediately after each successful upload. Cache stays bounded at ~12 GB (workers × shard size).
+
+### B14. HF rate limit: 128 commits/hour per repo
+- Symptom: backfill at 6 workers hit limit, started 1-hour sleeps.
+- Fix: `scripts/retry_backfill_fails.py` paces at 30 s/commit → 120/hour, safely under limit.
 
 ---
 
 ## 14. Common operations
 
-**Restart all workers (after manifest change, code change, or accidental kill):**
+**Restart all workers:**
 ```bash
-# kill running watchdog & workers
 kill $(cat outputs/watchdog.pid) $(cat outputs/{download,embed,upload}.pid 2>/dev/null)
 sleep 5
-# relaunch watchdog (24-h cycle; spawns and supervises the three workers)
 nohup bash scripts/autonomous_watchdog.sh > logs/watchdog.log 2>&1 &
 echo $! > outputs/watchdog.pid
 ```
 
-**Integrate a new GBIF batch (after submitting one with `cfp.gbif batch submit`):**
+**Submit + integrate a new GBIF batch:**
 ```bash
-# Wait + auto-parse + auto-merge + auto-restart-downloader (see scripts/integrate_birds_and_extras.sh
-# for the template; copy + adapt for your new zip path and any predicate-specific filtering).
-nohup bash scripts/integrate_birds_and_extras.sh > logs/integrate_<name>.log 2>&1 &
-```
-
-**Resubmit a GBIF batch download** (when you want to expand species/predicate scope):
-```bash
-# 1. Update keys
 python -m cfp.gbif batch resolve-keys --plants data/processed/plants_california_native.parquet
-# 2. Submit
 python -m cfp.gbif batch submit
-# 3. Wait + download
 python -m cfp.gbif batch wait --poll-seconds 30
-# 4. Parse to manifest parquet
-python -m cfp.gbif batch parse
-# 5. Merge into master manifest (see scripts/integrate_broad_pollinators.sh for the pattern)
+# Then write a one-shot integrate script (see scripts/integrate_birds_and_extras.sh template) that:
+#  1) waits for both .zip + .meta.json
+#  2) parses DwC-A (with type='StillImage' filter — see B12)
+#  3) merges into image_manifest.parquet
+#  4) pkill -f "cfp.pipeline download" so watchdog relaunches with bigger manifest
+nohup bash scripts/integrate_<name>.sh > logs/integrate_<name>.log 2>&1 &
 ```
 
-**Publish the species/interaction/provenance metadata to HF** (run after manifest changes):
+**Backfill a column across all shards (downloading + editing + re-uploading):**
+```bash
+# Template: scripts/fix_phenovision_swap_on_hf.py
+# Always include _purge_cache() after each upload (see B13)
+# Always pace at <= 120/hour to avoid HF rate limit (see B14)
+nohup python scripts/fix_phenovision_swap_on_hf.py --workers 3 > logs/fix_X.log 2>&1 &
+```
+
+**Publish updated species/interaction/provenance metadata to HF:**
 ```bash
 python -m cfp.hf publish-meta --repo deepearth/california-flourishing-pollination
 ```
 
-**Quick GPU verification** (test a single batch through DINOv3+PhenoVision):
+**Verify a sample embedding shard:**
 ```bash
 python -c "
-import sys; sys.path.insert(0,'src')
-from cfp.dinov3.extractor_combined import DINOv3PhenoVisionExtractor
-from pathlib import Path
-import time, torch
-e = DINOv3PhenoVisionExtractor()
-imgs = list(Path('/home/legel/cfp_images').rglob('*.jpg'))[:64]
-bufs = [p.read_bytes() for p in imgs]
-e.embed_from_bytes(bufs[:4])  # warmup
-torch.cuda.synchronize()
-t0 = time.time()
-out, fail = e.embed_from_bytes(bufs)
-torch.cuda.synchronize()
-print(f'{len(bufs)/(time.time()-t0):.0f} img/sec  has_nan={(out.cls!=out.cls).any() or (out.patches!=out.patches).any()}  failed={len(fail)}')
+import pandas as pd, numpy as np
+from huggingface_hub import hf_hub_download
+p = hf_hub_download('deepearth/california-flourishing-pollination',
+                    'embeddings/embeddings_20260524T070916_000000.parquet', repo_type='dataset')
+df = pd.read_parquet(p)
+r = df.iloc[0]
+cls = np.frombuffer(r['cls_fp16'], dtype=np.float16).reshape(r['cls_shape'])
+patches = np.frombuffer(r['patches_fp16'], dtype=np.float16).reshape(r['patches_shape'])
+print(f'rows={len(df)} taxon={r[\"taxon_name\"]} cls_norm={np.linalg.norm(cls):.2f} pat_std={patches.std():.3f}')
+print(f'PhenoVision flowering={r[\"phenovision_flowering_prob\"]:.3f} fruiting={r[\"phenovision_fruiting_prob\"]:.3f}')
+"
+```
+
+**Refresh the Space**: edit `scripts/cfp_viewer_space/app.py`, then:
+```bash
+python -c "
+from huggingface_hub import HfApi
+HfApi().upload_file(path_or_fileobj='scripts/cfp_viewer_space/app.py', path_in_repo='app.py',
+                     repo_id='deepearth/california-flourishing-pollination', repo_type='space',
+                     commit_message='<what changed>')
 "
 ```
 
@@ -488,21 +496,37 @@ print(f'{len(bufs)/(time.time()-t0):.0f} img/sec  has_nan={(out.cls!=out.cls).an
 
 ## 15. Sister projects (downstream)
 
-- **`legel/deepearth`** — the AI model architecture (Earth4D positional encoding + multi-modal world model).
+- **`legel/deepearth`** — DeepEarth architecture (Earth4D positional encoding + multi-modal world model).
 - **`legel/deepearth/models/flowering`** — flowering forecasting model that will consume this dataset.
 - **`legel/deepearth/models/pollination`** — plant-pollinator interaction forecasting.
 - **`legel/deepearth/models/fire_ecology`** — current SoTA on Globe-LFMC 2.0 (R²=0.78). DINOv3 features will join the LFMC predictor.
-- **`legel/phenovision`** — the user's Python port of `Phenobase/phenovision` (upstream PR #1, unmerged). Vendored at `vendor/phenovision/`.
+- **`legel/phenovision`** — user's Python port of Phenobase/phenovision (PR #1 fork). Vendored at `vendor/phenovision/`.
 
 ---
 
-## 16. When in doubt
+## 16. Phase 1.5 backlog
 
-1. **Check the live stats** (§9) first. The pipeline is usually still running — don't restart what's already working.
+1. **Add PhenoVision to the 64 legacy shards** that have only DINOv3 — re-fetch the images, run PhenoVision only, patch the columns.
+2. **Raw-image bucket archive** — push photo bytes to `hf://buckets/deepearth/cfp-raw-images` once embedding completes (bucket exists, empty).
+3. **PhenoVision spatial localization** — DINOv3 patches × PhenoVision classifier → patch-level flowering probability.
+4. **Recover the rare ~2K CA-native plant taxa** beyond Calscape (Jepson MOU).
+5. **Expand pollinator scope** further (Aves beyond the 7 added families).
+6. **Per-row CC-license filter sidecar** for downstream consumers who need permissive-only subsets.
+7. **Train a small ParametricUMAP** (Keras encoder, ~10 MB) instead of the 206 MB knn approximator — would shrink the Space's UMAP load time significantly.
+
+---
+
+## 17. When in doubt
+
+1. **Check the live stats** (§9) first. The pipeline is usually still running.
 2. **Check `logs/watchdog_status.log`** for the trend over time (5-min snapshots).
 3. **Read `PROVENANCE.md`** for the full data-source story with DOIs.
 4. **Read `ASSUMPTIONS.md`** for every operational decision and the risk-if-wrong.
 5. **DO NOT** introduce parallelism on HF commits (B5). DO use `upload_large_folder`.
 6. **DO NOT** revert to fp16 on DINOv3 (B1). bf16 stays.
 7. **DO NOT** use per-`gbif_id` keys for new checkpoints (B4). URL-keyed.
-8. When you change anything that affects this README, update it.
+8. **DO NOT** download shards without `_purge_cache()` (B13). Disk WILL fill.
+9. **DO NOT** exceed 128 commits/hour to HF (B14). Pace your scripts.
+10. **DO NOT** parse DwC-A `multimedia.txt` without filtering `type='StillImage'` (B12).
+11. **DO NOT** swap PhenoVision indexes — `index 0 = fruiting, index 1 = flowering` (B9).
+12. When you change anything that affects this README, update it.
